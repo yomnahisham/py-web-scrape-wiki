@@ -1,0 +1,5 @@
+   print("Formatted Preshow Host:", event_preshowhost)
+                    birth_date, birth_country, death_date = scrape_person_list(event_preshowhost)
+                    print("Birth Date:", birth_date)
+                    print("Birth Country:", birth_country)
+                    print("Death Date:", death_date)
