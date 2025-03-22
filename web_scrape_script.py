@@ -18,6 +18,75 @@ DB_CONFIG = {
     'charset': os.getenv('DB_CHARSET')
 }
 
+# function to connect to the database
+def connect_db():
+    return pymysql.connect(**DB_CONFIG)
+
+# function to insert venues into the database
+def insert_venue(venue_list):
+    conn = connect_db() 
+    cursor = conn.cursor()
+    for venue in venue_list:
+        venue = [v for v in venue if v.strip()]
+        if len(venue) == 1:
+            # only venue name provided
+            venue_name = venue[0]
+            neighborhood = None
+            city = None
+            state = "California"  # default value per schema
+            country = "U.S."     # default value per schema
+        elif len(venue) == 2:
+            # format: [venue_name, city]
+            venue_name, city = venue
+            neighborhood = None
+            state = None
+            country = "U.S."
+        elif len(venue) == 3:
+            # format: [venue_name, city, country]
+            venue_name, city, country = venue
+            neighborhood = None
+            state = None
+        elif len(venue) == 4:
+            # format: [venue_name, city, state, country]
+            venue_name, city, state, country = venue
+            neighborhood = None
+        elif len(venue) >= 5:
+            # format: [venue_name, neighborhood, city, state, country]
+            venue_name, neighborhood, city, *rest = venue
+            if len(rest) == 2:
+                state, country = rest
+            elif len(rest) == 1:
+                state = None
+                country = rest[0]
+            else:
+                state = None
+                country = "U.S."  # default value per schema
+            if neighborhood and venue_name.lower() == neighborhood.lower():
+                neighborhood = None
+        else:
+            print("Invalid venue format:", venue)
+            continue
+
+        # check if the venue already exists based on venue_name only.
+        select_query = """
+            SELECT venue_id 
+            FROM venue 
+            WHERE venue_name = %s
+        """
+        cursor.execute(select_query, (venue_name,))
+        result = cursor.fetchone()
+        if result is None:
+            cursor.execute(
+                "INSERT INTO venue (venue_name, neighborhood, city, state, country) VALUES (%s, %s, %s, %s, %s)",
+                (venue_name, neighborhood, city, state, country)
+            )
+        else:
+            print(f"Venue '{venue_name}' in {city}, {country} already exists (ID: {result[0]}).")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 # function to get the ordinal of a number which will be used in the url
 def ordinal(n):
     if 11 <= n <= 13:
@@ -36,15 +105,19 @@ def format_date(date_str):
 
 # function to format the site location
 def format_site(site_str):
+    print("Site String:", site_str)
     # remove any bracketed content (including newlines)
     site_clean = re.sub(r'\[.*?\]', '', site_str, flags=re.DOTALL)
-    # replace any occurrence of "in" surrounded by whitespace (including newlines) with a comma.
+    # remove parentheses while keeping their content intact
+    site_clean = re.sub(r'\((.*?)\)', r'\1', site_clean)
+    # replace any occurrence of "in" surrounded by whitespace (including newlines) with a comma
     site_clean = re.sub(r'\s+in\s+', ', ', site_clean)
     # split on both commas and newlines
     parts = re.split(r'[,\n]+', site_clean)
-    # strip extra whitespace and remove empty strings.
+    # strip extra whitespace and remove empty strings
     parts = [p.strip() for p in parts if p.strip()]
     return parts
+
 
 # function to format the people who hosted the event
 def format_host(host_str):
@@ -59,66 +132,61 @@ def format_host(host_str):
         host_clean = re.sub(r'\[.*?\]', '', host_str)
         return host_clean.split()
     
-
+# function to format raw text into multiple locations
 def format_site_multi(raw_text):
-    """
-    Given raw text for the Site cell that may contain multiple locations,
-    where each location is represented by two lines:
-      Line 1: venue name.
-      Line 2: location details (comma-separated).
+    # remove bracketed text that appears on its own lines (including its surrounding newline characters)
+    raw_text = re.sub(r'\n\[\s*.*?\s*\]\n', '\n', raw_text, flags=re.DOTALL)
     
-    This function:
-      1. Splits the raw text by newlines.
-      2. Removes empty lines and lines that are exactly "and" or "in" (case-insensitive),
-         and lines that consist solely of bracketed text.
-      3. Merges any "noise" lines (e.g. lines that are only punctuation or start with a comma)
-         with the previous line.
-      4. Groups every two lines into one location.
-    
-    Returns:
-      A list of lists, e.g.:
-      [['RKO Pantages Theatre', 'Hollywood', 'California'],
-       ['NBC International Theatre', 'New York City', 'New York']]
-    """
-    # split raw_text into non-empty lines and filter out lines that are "and" or "in"
-    lines = [
-        line.strip()
-        for line in raw_text.splitlines()
-        if line.strip() 
-           and line.strip().lower() not in {"and", "in"}
-           and not re.match(r'^\[.*\]$', line.strip())
-    ]
+    # step 1: split raw_text into blocks separated by blank lines
+    blocks = re.split(r'\n\s*\n', raw_text.strip())
 
-    # merge lines that are "noise" (e.g. only punctuation or start with a comma) into the previous line.
-    cleaned_lines = []
-    for line in lines:
-        # If the line starts with a comma or is only punctuation, merge with previous line.
-        if line.startswith(",") or all(char in ",.;:" for char in line):
-            if cleaned_lines:
-                cleaned_lines[-1] = cleaned_lines[-1] + " " + line
+    locations = []
+    for block in blocks:
+        # split each block into lines and strip unnecessary whitespace
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+
+        # remove "and", "in" (case insensitive)
+        lines = [line for line in lines if line.lower() not in {"and", "in"}]
+
+        if not lines:
+            continue
+
+        # merge lines that are only punctuation, but if a line starts with a comma and has text,
+        # then treat it as a new entry rather than merging.
+        cleaned_lines = []
+        for line in lines:
+            if line.startswith(","):
+                stripped = line.lstrip(",").strip()
+                # Only merge if nothing remains after stripping
+                if stripped == "":
+                    if cleaned_lines:
+                        cleaned_lines[-1] += " " + stripped
+                    else:
+                        cleaned_lines.append(line)
+                else:
+                    # Append the stripped content as a separate element
+                    cleaned_lines.append(stripped)
+            elif all(char in ",.;:" for char in line):
+                if cleaned_lines:
+                    cleaned_lines[-1] += " " + line.lstrip(",").strip()
+                else:
+                    cleaned_lines.append(line)
             else:
                 cleaned_lines.append(line)
-        else:
-            cleaned_lines.append(line)
 
-    # group every two lines into one location.
-    locations = []
-    i = 0
-    while i < len(cleaned_lines):
-        if i + 1 < len(cleaned_lines):
-            venue = cleaned_lines[i]
-            # Split the details by comma and merge them into a single list.
-            details = [part.strip() for part in cleaned_lines[i+1].split(",") if part.strip()]
-            if locations and len(locations[-1]) == 1:
-                # Merge with the previous venue if it exists and has only one element.
-                locations[-1].extend(details)
-            else:
-                locations.append([venue] + details)
-            i += 2
-        else:
-            # If an odd number of lines remains, add it as a separate group.
-            locations.append([cleaned_lines[i]])
-            i += 1
+        # remove parentheses but keep the content inside them
+        cleaned_lines = [re.sub(r'[()]', '', line).strip() for line in cleaned_lines]
+
+        # assume the first line is the venue name, and subsequent lines are location details
+        venue = cleaned_lines[0]
+        details = []
+        for line in cleaned_lines[1:]:
+            # split correctly on commas and ensure proper separation of city and state
+            parts = [part.strip() for part in re.split(r',\s*', line) if part.strip()]
+            details.extend(parts)
+        
+        locations.append([venue] + details)
+
     return locations
 
 # function to convert the duration strictly into minutes
@@ -226,25 +294,25 @@ def scrape_person_list(person_list, entity_type=None):
                         if birthplace_div:
                             person_birth_country = birthplace_div.text.strip()
                             person_birth_country = re.sub(r'[\)\]]', '', person_birth_country).strip()
-                            # extract the last part after splitting by commas, ensuring it's not empty or invalid.
+                            # extract the last part after splitting by commas, ensuring it's not empty or invalid
                             parts = [part.strip() for part in person_birth_country.split(",") if part.strip()]
                             if parts:
                                 person_birth_country = parts[-1]
                             else:
                                 person_birth_country = None
-                            print("Birth Country:", person_birth_country)
                         else:
-                            # fallback: use the full text of the cell.
+                            # fallback: use the full text of the cell
                             born_text = born_cell.get_text(" ", strip=True)
                             if person_birth_date:
                                 born_text = born_text.replace(person_birth_date, "").strip()
                             born_text = re.sub(r'\(.*?\)', '', born_text).strip()
                             born_text = re.sub(r'\[.*?\]', '', born_text).strip()
-                            # split the remaining text by commas.
+                            # split the remaining text by commas
                             parts = [p.strip() for p in born_text.split(",") if p.strip()]
                             if parts:
-                                # take the last element as the birthplace.
+                                # take the last element as the birthplace
                                 person_birth_country = parts[-1]
+                                # take the last element as the birthplace and remove anything after
                                 print("Birth Country (fallback):", person_birth_country)
                     if "Died" in header_text:
                         death_date_span = row.find("span", class_="dday")
@@ -287,21 +355,21 @@ def scrape_data(n):
 
             if "site" in header_text.lower():
                 td = row.find("td")
-                # get the raw text while preserving newlines and stop at the first bracket.
-                raw_text = re.split(r'\[', td.get_text(separator="\n").strip(), 1)[0].strip()
-                #print("Raw Site (full text):", raw_text)
+                # get the raw text while preserving newlines and remove bracketed content
+                raw_text = re.sub(r'\[.*?\]', '', td.get_text(separator="\n").strip()).strip()
+                print("Raw Site (full text):", raw_text)
                 links = td.find_all("a")
-                # if there are exactly 2 links, assume one location.
+                # if there are exactly 2 links, assume one location
                 if links and len(links) == 2 | 3:
                     #return a flat list
                     event_site = [format_site(raw_text)]
-                #if there are more than 2 links, assume multiple locations.
+                #if there are more than 2 links, assume multiple locations
                 elif links and len(links) > 3:
                     event_site = format_site_multi(raw_text)
                 else:
                     event_site = [format_site(raw_text)]
-                print("Raw Site:", raw_text)
                 print("Formatted Site:", event_site)
+                insert_venue(event_site)
             
             if "hosted by" in header_text.lower():
                 td = row.find("td")
@@ -331,10 +399,6 @@ def scrape_data(n):
                         print("(Host) Birth Date:", birth_date)
                         print("(Host) Birth Country:", birth_country)
                         print("(Host) Death Date:", death_date)
-                ''' for host in event_host:
-                        print("(Host) Birth Date:", birth_date)
-                        print("(Host) Birth Country:", birth_country)
-                        print("(Host) Death Date:", death_date)'''
 
             if "preshow hosts" in header_text.lower():
                 td = row.find("td")
@@ -447,11 +511,11 @@ def scrape_data(n):
                 td = row.find("td")
                 raw_duration = td.text.strip()
                 event_duration = convert_duration_to_minutes(raw_duration)
-                print("Duration:", event_duration, "minutes")
+                print("Duration:", event_duration, "minutes") 
 
 
 def main():
-    iterations = range(97, 96, -1)  # 97th to 1st
+    iterations = range(41, 40, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
