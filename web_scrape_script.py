@@ -22,58 +22,89 @@ DB_CONFIG = {
 def connect_db():
     return pymysql.connect(**DB_CONFIG)
 
-# function to insert venues into the database
+
 def insert_venue(venue_list):
-    conn = connect_db() 
+    conn = connect_db()
     cursor = conn.cursor()
+    
     for venue in venue_list:
-        venue = [v for v in venue if v.strip()]
-        if len(venue) == 1:
-            # only venue name provided
+        # Remove empty or whitespace-only items.
+        venue = [v.strip() for v in venue if v.strip()]
+        
+        # Check if we have at least 3 fields and one of the first two is "coconut grove".
+        if len(venue) >= 3 and ("coconut grove" in [venue[0].lower(), venue[1].lower()] or "cocoanut grove" in [venue[0].lower(), venue[1].lower()]):
+            # Force: neighborhood = "Coconut Grove", venue_name = the other of the first two.
+            if venue[0].lower() == "coconut grove":
+                neighborhood = venue[0]
+                venue_name = venue[1]
+            else:
+                neighborhood = venue[1]
+                venue_name = venue[0]
+            city = venue[2]
+            if len(venue) >= 5:
+                state = venue[3]
+                country = venue[4]
+            elif len(venue) == 4:
+                state = venue[3]
+                country = "U.S."
+            else:
+                state = "California"
+                country = "U.S."
+        elif len(venue) == 1:
+            # Format: [venue_name]
             venue_name = venue[0]
             neighborhood = None
             city = None
-            state = "California"  # default value per schema
-            country = "U.S."     # default value per schema
+            state = "California"
+            country = "U.S."
         elif len(venue) == 2:
-            # format: [venue_name, city]
+            # Format: [venue_name, city]
             venue_name, city = venue
             neighborhood = None
-            state = None
+            state = "California"
             country = "U.S."
         elif len(venue) == 3:
-            # format: [venue_name, city, country]
-            venue_name, city, country = venue
-            neighborhood = None
-            state = None
-        elif len(venue) == 4:
-            # format: [venue_name, city, state, country]
-            venue_name, city, state, country = venue
-            neighborhood = None
-        elif len(venue) >= 5:
-            # format: [venue_name, neighborhood, city, state, country]
-            venue_name, neighborhood, city, *rest = venue
-            if len(rest) == 2:
-                state, country = rest
-            elif len(rest) == 1:
-                state = None
-                country = rest[0]
+            if venue[1].lower() == "hollywood":
+                venue_name, neighborhood, state = venue
+                city = "Los Angeles"
+                country = "U.S."
             else:
-                state = None
-                country = "U.S."  # default value per schema
+                # Format: [venue_name, city, state]
+                venue_name, city, state = venue
+                neighborhood = None
+                country = "U.S."
+        elif len(venue) == 4:
+            if venue[1].lower() == "hollywood":
+                venue_name, neighborhood, state, country = venue
+                city = "Los Angeles"
+            else:
+                # Format: [venue_name, city, state, country]
+                venue_name, city, state, country = venue
+                neighborhood = None
+        elif len(venue) >= 5:
+            # Format: [venue_name, neighborhood, city, state, country] (ignore extras)
+            venue_name, neighborhood, city, state, country = venue[:5]
+            # If neighborhood equals venue_name (ignoring case), clear it.
             if neighborhood and venue_name.lower() == neighborhood.lower():
                 neighborhood = None
         else:
             print("Invalid venue format:", venue)
             continue
 
-        # check if the venue already exists based on venue_name only.
+        # Normalize the venue name by removing a leading "the " (case-insensitive)
+        norm_venue_name = re.sub(r'^the\s+', '', venue_name, flags=re.IGNORECASE).lower()
+        # Build two variants: one without and one with "the " prefix.
+        variant1 = norm_venue_name
+        variant2 = "the " + norm_venue_name
+
+        # Only compare venue names for duplicates.
         select_query = """
-            SELECT venue_id 
-            FROM venue 
-            WHERE venue_name = %s
+            SELECT venue_id
+            FROM venue
+            WHERE LOWER(venue_name) IN (%s, %s)
         """
-        cursor.execute(select_query, (venue_name,))
+        cursor.execute(select_query, (variant1, variant2))
+            
         result = cursor.fetchone()
         if result is None:
             cursor.execute(
@@ -81,7 +112,8 @@ def insert_venue(venue_list):
                 (venue_name, neighborhood, city, state, country)
             )
         else:
-            print(f"Venue '{venue_name}' in {city}, {country} already exists (ID: {result[0]}).")
+            print(f"Venue '{venue_name}' already exists (ID: {result[0]}).")
+            
     conn.commit()
     cursor.close()
     conn.close()
@@ -371,7 +403,7 @@ def scrape_data(n):
                 print("Formatted Site:", event_site)
                 insert_venue(event_site)
             
-            if "hosted by" in header_text.lower():
+        '''    if "hosted by" in header_text.lower():
                 td = row.find("td")
                 event_host = []
                 # First check for <li> tags
@@ -511,11 +543,11 @@ def scrape_data(n):
                 td = row.find("td")
                 raw_duration = td.text.strip()
                 event_duration = convert_duration_to_minutes(raw_duration)
-                print("Duration:", event_duration, "minutes") 
+                print("Duration:", event_duration, "minutes") '''
 
 
 def main():
-    iterations = range(41, 40, -1)  # 97th to 1st
+    iterations = range(97, 0, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
