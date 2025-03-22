@@ -133,12 +133,20 @@ def insert_person(person_list, person_info):
         birth_country = person_info[1]
         date_of_death = person_info[2]
 
-        select_query = """
-            SELECT person_id
-            FROM person
-            WHERE first_name = %s AND last_name = %s AND birthDate = %s
-        """
-        cursor.execute(select_query, (first_name, last_name, date_of_birth))
+        if date_of_birth is not None:
+            select_query = """
+                SELECT person_id
+                FROM person
+                WHERE first_name = %s AND last_name = %s AND birthDate = %s
+            """
+            cursor.execute(select_query, (first_name, last_name, date_of_birth))
+        else: 
+            select_query = """
+                SELECT person_id
+                FROM person
+                WHERE first_name = %s AND last_name = %s
+            """
+            cursor.execute(select_query, (first_name, last_name))
         if cursor.fetchone() is None:
             cursor.execute(
                 "INSERT INTO person (first_name, middle_name, last_name, birthDate, country, deathDate) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -146,6 +154,38 @@ def insert_person(person_list, person_info):
             )
         else:
             print(f"Person '{first_name} {last_name}' already exists.")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# function to get the venue id
+def get_venue_id(venue_name):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT venue_id FROM venue WHERE venue_name = %s", (venue_name,))
+    venue_id = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return venue_id
+
+# function to insert award into db
+def insert_award(n, event_date, venue_ids, duration, network):
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    for venue_id in venue_ids:
+        cursor.execute(
+            "SELECT award_edition_id FROM award_edition WHERE edition = %s AND venue_id = %s AND network = %s",
+            (n, venue_id, network)
+        )
+        if cursor.fetchone() is not None:
+            print(f"Award {n} at venue {venue_id} already exists.")
+        else:
+            cursor.execute(
+                "INSERT INTO award_edition (edition, aYear, cDate, venue_id, duration, network) VALUES (%s, %s, %s, %s, %s, %s)",
+                (n, datetime.strptime(format_date(event_date), "%Y-%m-%d").year, format_date(event_date), venue_ids[0], duration, ','.join(network) if isinstance(network, list) else network)
+            )
+    
     conn.commit()
     cursor.close()
     conn.close()
@@ -406,6 +446,10 @@ def scrape_data(n):
     event_preshowhost = None
     event_producer = None
     event_director = None
+    event_network = None
+    event_duration = None
+
+    venue_id = []
 
     # dynamically find the indices for date, site, and host
     for row in award_details:
@@ -432,7 +476,9 @@ def scrape_data(n):
                 else:
                     event_site = [format_site(raw_text)]
                 print("Formatted Site:", event_site)
-                #insert_venue(event_site)
+                insert_venue(event_site)
+                for site in event_site:
+                    venue_id.append(get_venue_id(site[0]))
             
             if "hosted by" in header_text.lower():
                 td = row.find("td")
@@ -582,6 +628,8 @@ def scrape_data(n):
                 raw_duration = td.text.strip()
                 event_duration = convert_duration_to_minutes(raw_duration)
                 print("Duration:", event_duration, "minutes") 
+
+    insert_award(n, event_date, venue_id, event_duration, event_network)    
 
 
 def main():
