@@ -22,7 +22,7 @@ DB_CONFIG = {
 def connect_db():
     return pymysql.connect(**DB_CONFIG)
 
-
+# function to insert venue into db
 def insert_venue(venue_list):
     conn = connect_db()
     cursor = conn.cursor()
@@ -84,7 +84,7 @@ def insert_venue(venue_list):
         elif len(venue) >= 5:
             # Format: [venue_name, neighborhood, city, state, country] (ignore extras)
             venue_name, neighborhood, city, state, country = venue[:5]
-            # If neighborhood equals venue_name (ignoring case), clear it.
+            # if neighborhood equals venue_name (ignoring case), clear it
             if neighborhood and venue_name.lower() == neighborhood.lower():
                 neighborhood = None
         else:
@@ -97,7 +97,7 @@ def insert_venue(venue_list):
         variant1 = norm_venue_name
         variant2 = "the " + norm_venue_name
 
-        # Only compare venue names for duplicates.
+        # only compare venue names for duplicates
         select_query = """
             SELECT venue_id
             FROM venue
@@ -118,6 +118,37 @@ def insert_venue(venue_list):
     cursor.close()
     conn.close()
 
+# function to insert person into db
+def insert_person(person_list, person_info):
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    for person in person_list:
+        # Remove empty or whitespace-only items.
+        person = [p.strip() for p in person if p.strip()]
+        first_name = person[0]
+        middle_name = person[1] if len(person) == 3 else None
+        last_name = person[2] if len(person) == 3 else person[1]
+        date_of_birth = person_info[0]
+        birth_country = person_info[1]
+        date_of_death = person_info[2]
+
+        select_query = """
+            SELECT person_id
+            FROM person
+            WHERE first_name = %s AND last_name = %s AND birthDate = %s
+        """
+        cursor.execute(select_query, (first_name, last_name, date_of_birth))
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO person (first_name, middle_name, last_name, birthDate, country, deathDate) VALUES (%s, %s, %s, %s, %s, %s)",
+                (first_name, middle_name, last_name, date_of_birth, birth_country, date_of_death)
+            )
+        else:
+            print(f"Person '{first_name} {last_name}' already exists.")
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 # function to get the ordinal of a number which will be used in the url
 def ordinal(n):
@@ -401,9 +432,9 @@ def scrape_data(n):
                 else:
                     event_site = [format_site(raw_text)]
                 print("Formatted Site:", event_site)
-                insert_venue(event_site)
+                #insert_venue(event_site)
             
-        '''    if "hosted by" in header_text.lower():
+            if "hosted by" in header_text.lower():
                 td = row.find("td")
                 event_host = []
                 # First check for <li> tags
@@ -427,10 +458,12 @@ def scrape_data(n):
                 if event_host:
                     print("Formatted Host:", event_host)
                     person_details = scrape_person_list(event_host)
-                    for birth_date, birth_country, death_date in person_details:
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Host) Birth Date:", birth_date)
                         print("(Host) Birth Country:", birth_country)
                         print("(Host) Death Date:", death_date)
+                        if i < len(event_host):
+                            insert_person([event_host[i]], [birth_date, birth_country, death_date])
 
             if "preshow hosts" in header_text.lower():
                 td = row.find("td")
@@ -464,11 +497,12 @@ def scrape_data(n):
                 if event_preshowhost:
                     print("Formatted Preshow Host:", event_preshowhost)
                     person_details = scrape_person_list(event_preshowhost)
-                    if person_details:
-                        for birth_date, birth_country, death_date in person_details:
-                            print("(Preshow Host) Birth Date:", birth_date)
-                            print("(Preshow Host) Birth Country:", birth_country)
-                            print("(Preshow Host) Death Date:", death_date)
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                        print("(Preshow Host) Birth Date:", birth_date)
+                        print("(Preshow Host) Birth Country:", birth_country)
+                        print("(Preshow Host) Death Date:", death_date)
+                        if i < len(event_preshowhost):
+                            insert_person([event_preshowhost[i]], [birth_date, birth_country, death_date])
 
             if "produced by" in header_text.lower():
                 td = row.find("td")
@@ -499,10 +533,12 @@ def scrape_data(n):
                 if event_producer:
                     print("Formatted Producer:", event_producer)
                     person_details = scrape_person_list(event_producer)
-                    for birth_date, birth_country, death_date in person_details:
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Producer) Birth Date:", birth_date)
                         print("(Producer) Birth Country:", birth_country)
                         print("(Producer) Death Date:", death_date)
+                        if i < len(event_producer):
+                            insert_person([event_producer[i]], [birth_date, birth_country, death_date])
 
             if "directed by" in header_text.lower():
                 td = row.find("td")
@@ -527,10 +563,12 @@ def scrape_data(n):
                 if event_director:
                     print("Formatted Director:", event_director)
                     person_details = scrape_person_list(event_director, "director")
-                    for birth_date, birth_country, death_date in person_details:
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Director) Birth Date:", birth_date)
                         print("(Director) Birth Country:", birth_country)
                         print("(Director) Death Date:", death_date)
+                        if i < len(event_director):
+                            insert_person([event_director[i]], [birth_date, birth_country, death_date])
 
             if "network" in header_text.lower():
                 td = row.find("td")
@@ -543,11 +581,11 @@ def scrape_data(n):
                 td = row.find("td")
                 raw_duration = td.text.strip()
                 event_duration = convert_duration_to_minutes(raw_duration)
-                print("Duration:", event_duration, "minutes") '''
+                print("Duration:", event_duration, "minutes") 
 
 
 def main():
-    iterations = range(97, 0, -1)  # 97th to 1st
+    iterations = range(97, 96, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
