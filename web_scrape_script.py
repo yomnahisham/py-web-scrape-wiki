@@ -101,7 +101,7 @@ def insert_venue(venue_list):
         select_query = """
             SELECT venue_id
             FROM venue
-            WHERE LOWER(venue_name) IN (%s, %s)
+            WHERE LOWER(venue_name) = %s OR LOWER(venue_name) = %s
         """
         cursor.execute(select_query, (variant1, variant2))
             
@@ -173,22 +173,117 @@ def insert_award(n, event_date, venue_ids, duration, network):
     conn = connect_db()
     cursor = conn.cursor()
     
+    # Ensure network is a string.
+    network_param = ', '.join(network) if isinstance(network, list) else network
+
     for venue_id in venue_ids:
+        # Extract the actual venue id from the tuple if necessary.
+        vid = venue_id[0] if isinstance(venue_id, tuple) else venue_id
         cursor.execute(
             "SELECT award_edition_id FROM award_edition WHERE edition = %s AND venue_id = %s AND network = %s",
-            (n, venue_id, network)
+            (n, vid, network_param)
         )
         if cursor.fetchone() is not None:
-            print(f"Award {n} at venue {venue_id} already exists.")
+            print(f"Award {n} at venue {vid} already exists.")
         else:
             cursor.execute(
                 "INSERT INTO award_edition (edition, aYear, cDate, venue_id, duration, network) VALUES (%s, %s, %s, %s, %s, %s)",
-                (n, datetime.strptime(format_date(event_date), "%Y-%m-%d").year, format_date(event_date), venue_ids[0], duration, ','.join(network) if isinstance(network, list) else network)
+                (
+                    n,
+                    datetime.strptime(format_date(event_date), "%Y-%m-%d").year,
+                    format_date(event_date),
+                    vid,
+                    duration,
+                    network_param
+                )
             )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def insert_position(position_list):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    for position in position_list:
+        position_title = position
+        if position_title:
+            cursor.execute(
+                "SELECT position_id FROM positions WHERE title = %s", (position_title,)
+            )
+            already_exists = cursor.fetchone()
+            if already_exists is None:
+                cursor.execute(
+                    "INSERT INTO positions (title) VALUES (%s)", (position_title,)
+                )
+            else: 
+                print(f"Positons {position_title} already exists.")
+        else:
+            print("Failed to get position title from position list.")
     
     conn.commit()
     cursor.close()
     conn.close()
+
+
+# function to insert the person, positon, and award connection into the db
+def insert_person_connection(connection_list):
+    conn = connect_db()
+    cursor = conn.cursor()
+    for connection in connection_list:
+        award_num, first_name, last_name, date_of_birth, position = connection
+        # Fetch person_id based on first name, last name, and date of birth
+        if date_of_birth:
+            cursor.execute(
+                "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate = %s",
+                (first_name, last_name, date_of_birth)
+            )
+        else:
+            cursor.execute(
+                "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s",
+                (first_name, last_name)
+            )
+        person_id = cursor.fetchone()
+
+        # fetch award_id based on award number
+        cursor.execute(
+            "SELECT award_edition_id FROM award_edition WHERE edition = %s",
+            (award_num,)
+        )
+        award_id = cursor.fetchone()
+
+        # fetch position_id based on position
+        cursor.execute(
+            "SELECT position_id FROM positions WHERE title = %s",
+            (position,)
+        )
+        position_id = cursor.fetchone()
+
+        # Use logical AND (and) instead of bitwise (&)
+        if person_id and award_id and position_id:
+            person_id = person_id[0]
+            award_id = award_id[0]
+            position_id = position_id[0]
+            # check if the connection already exists
+            cursor.execute(
+                "SELECT * FROM award_edition_person WHERE award_id = %s AND person_id = %s AND position_id = %s",
+                (award_id, person_id, position_id)
+            )
+            if cursor.fetchone() is None:
+                # Insert the connection into the database
+                cursor.execute(
+                    "INSERT INTO award_edition_person (award_id, person_id, position_id) VALUES (%s, %s, %s)",
+                    (award_id, person_id, position_id)
+                )
+            else:
+                print(f"Connection for award {award_num}, person {first_name} {last_name}, position {position} already exists.")
+        else:
+            print(f"Missing data for award {award_num}, person {first_name} {last_name}, position {position}.")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 
 # function to get the ordinal of a number which will be used in the url
 def ordinal(n):
@@ -450,6 +545,8 @@ def scrape_data(n):
     event_duration = None
 
     venue_id = []
+    positions = []
+    connections = []
 
     # dynamically find the indices for date, site, and host
     for row in award_details:
@@ -481,6 +578,7 @@ def scrape_data(n):
                     venue_id.append(get_venue_id(site[0]))
             
             if "hosted by" in header_text.lower():
+                positions.append("Host")
                 td = row.find("td")
                 event_host = []
                 # First check for <li> tags
@@ -510,8 +608,10 @@ def scrape_data(n):
                         print("(Host) Death Date:", death_date)
                         if i < len(event_host):
                             insert_person([event_host[i]], [birth_date, birth_country, death_date])
+                            connections.append((n, event_host[i][0], event_host[i][-1], birth_date, "Host"))
 
             if "preshow hosts" in header_text.lower():
+                positions.append("Preshow Host")
                 td = row.find("td")
                 # get raw text (stop at the first bracket)
                 raw_text = re.split(r'\[', td.get_text(separator="\n").strip(), 1)[0].strip()
@@ -549,8 +649,10 @@ def scrape_data(n):
                         print("(Preshow Host) Death Date:", death_date)
                         if i < len(event_preshowhost):
                             insert_person([event_preshowhost[i]], [birth_date, birth_country, death_date])
+                            connections.append((n, event_preshowhost[i][0], event_preshowhost[i][-1], birth_date, "Preshow Host"))
 
             if "produced by" in header_text.lower():
+                positions.append("Producer")
                 td = row.find("td")
                 event_producer = []
                 li_items = td.find_all("li")
@@ -585,8 +687,10 @@ def scrape_data(n):
                         print("(Producer) Death Date:", death_date)
                         if i < len(event_producer):
                             insert_person([event_producer[i]], [birth_date, birth_country, death_date])
+                            connections.append((n, event_producer[i][0], event_producer[i][-1], birth_date, "Producer"))
 
             if "directed by" in header_text.lower():
+                positions.append("Director")
                 td = row.find("td")
                 event_director = []
                 li_items = td.find_all("li")
@@ -615,6 +719,7 @@ def scrape_data(n):
                         print("(Director) Death Date:", death_date)
                         if i < len(event_director):
                             insert_person([event_director[i]], [birth_date, birth_country, death_date])
+                            connections.append((n, event_director[i][0], event_director[i][-1], birth_date, "Director"))
 
             if "network" in header_text.lower():
                 td = row.find("td")
@@ -629,7 +734,9 @@ def scrape_data(n):
                 event_duration = convert_duration_to_minutes(raw_duration)
                 print("Duration:", event_duration, "minutes") 
 
-    insert_award(n, event_date, venue_id, event_duration, event_network)    
+    insert_position(positions)
+    insert_award(n, event_date, venue_id, event_duration, event_network) 
+    insert_person_connection(connections)   
 
 
 def main():
