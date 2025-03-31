@@ -388,18 +388,70 @@ def insert_movie_person(connection_list):
 def insert_movie(movie_name, release_dates, in_language, run_time, country, production_companies):
     conn = connect_db()
     cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT * FROM movie WHERE movie_name = %s", (movie_name,)
+    )
+    if cursor.fetchone() is None:
+        cursor.execute(
+            "INSERT INTO movie (movie_name, run_time) VALUES (%s, %s)", (movie_name, run_time)
+        )
+    else: 
+        print(f"Movie {movie_name} already exists.") 
+
 
     for release_date in release_dates:
         cursor.execute(
-            "SELECT * FROM movie WHERE movie_name = %s AND release_date = %s", (movie_name, release_date)
+            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
+        )
+        movie_id = cursor.fetchone()
+
+        cursor.execute(
+            "SELECT * FROM movie_release_date WHERE movie_id = %s AND release_date = %s", (movie_id, release_date)
         )
         if cursor.fetchone() is None:
             cursor.execute(
-                "INSERT INTO movie (movie_name, release_date, in_language, run_time, country) VALUES (%s, %s, %s, %s, %s)",
-                (movie_name, release_date, in_language, run_time, country)
+                "INSERT INTO movie_release_date (movie_id, release_date) VALUES (%s, %s)",
+                (movie_id, release_date)
             )
         else: 
-            print(f"Movie {movie_name} already exists.") 
+            print(f"Movie {movie_name} and date {release_date} already exists.") 
+            continue
+    
+    for lang in in_language:
+        cursor.execute(
+            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
+        )
+        movie_id = cursor.fetchone()
+
+        cursor.execute(
+            "SELECT * FROM movie_language WHERE movie_id = %s AND in_language = %s", (movie_id, lang)
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO movie_language (movie_id, in_language) VALUES (%s, %s)",
+                (movie_id,lang)
+            )
+        else: 
+            print(f"Movie {movie_name} and lang {lang} already exists.") 
+            continue
+    
+    for con in country:
+        cursor.execute(
+            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
+        )
+        movie_id = cursor.fetchone()
+
+        cursor.execute(
+            "SELECT * FROM movie_country WHERE movie_id = %s AND country = %s", (movie_id, con)
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO movie_country (movie_id, country) VALUES (%s, %s)",
+                (movie_id,con)
+            )
+        else: 
+            print(f"Movie {movie_name} and country {con} already exists.") 
             continue
     
     for company in production_companies:
@@ -411,7 +463,7 @@ def insert_movie(movie_name, release_dates, in_language, run_time, country, prod
         if company_id:
             for release_date in release_dates:
                 cursor.execute(
-                    "SELECT movie_id FROM movie WHERE movie_name = %s AND release_date = %s", (movie_name, release_date)
+                    "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
                 )
                 movie_id = cursor.fetchone()
                 if movie_id and company_id:
@@ -432,6 +484,26 @@ def insert_movie(movie_name, release_dates, in_language, run_time, country, prod
     conn.commit()
     cursor.close()
     conn.close()
+
+def insert_category(cat):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM category WHERE category_name = %s", (cat,)  # Add a comma to make it a tuple
+    )
+    if cursor.fetchone() is None:
+        cursor.execute(
+            "INSERT INTO category (category_name) VALUES (%s)", (cat,)  # Corrected syntax
+        )
+        conn.commit()  # Commit only when inserting
+    else:
+        print(f"Category '{cat}' already exists.")
+
+    cursor.close()
+    conn.close()
+
+
 
 
 def insert_production_company(production_companies):
@@ -609,6 +681,7 @@ def convert_duration_to_minutes(duration_str):
             total_minutes = int(m.group(1))
     return total_minutes
 
+
 # function to check if the link is valid
 def can_follow_link(entity_type, article):
     """
@@ -650,6 +723,45 @@ def can_follow_link(entity_type, article):
                     print(f"Alternative URL not found: {alt_url}, sticking with original.")
 
     return url
+
+def clean_producers(producer_text):
+    # remove trailing "producer(s)" if present
+    lower = producer_text.lower()
+    for word in ["producers", "producer"]:
+        if lower.endswith(word):
+            producer_text = producer_text[:-len(word)].strip()
+            break
+    # Remove specified phrases (case-insensitive) BEFORE further splitting
+    producer_text = re.sub(r'(?i)music and lyrics by', '', producer_text)
+    producer_text = re.sub(r'(?i)production design:', '', producer_text)
+    producer_text = re.sub(r'(?i)directed by', '', producer_text)
+    producer_text = re.sub(r'(?i)screenplay by', '', producer_text)
+    # Replace "; Story by" with a comma
+    producer_text = producer_text.replace("; Story by", ", ")
+    # Replace "; Set Decoration:" with a comma
+    producer_text = producer_text.replace("; Set Decoration:", ", ")
+    # Remove everything starting with "; based" (case-insensitive)
+    producer_text = re.sub(r'(?i); based.*$', '', producer_text)
+    # Now replace " and " with commas for consistent splitting
+    producer_text = producer_text.replace(" and ", ", ")
+    # Remove anything in parentheses or square brackets (including the brackets)
+    producer_text = re.sub(r'[\(\[].*?[\)\]]', '', producer_text)
+    # split on commas with optional spaces and clean each element
+    producers = []
+    for p in re.split(r',\s*', producer_text):
+        # remove any extra role info following " as "
+        cleaned = p.split(" as ")[0].replace("‡", "").strip()
+        if cleaned.lower() in {"producer", "producers"}:
+            continue
+        if cleaned:
+            producers.append(cleaned)
+    return producers
+
+
+def clean_category(category_text):
+    # Remove any content in square brackets, then strip and lowercase.
+    return re.sub(r'\[.*?\]', '', category_text).strip().lower()
+
 
 # function to scrape the person details (follows link into person's wikipedia page)
 def scrape_person_list(person_list, entity_type=None):
@@ -747,8 +859,8 @@ def scrape_movie_details(movie_title):
         return
     movie_details = movie_infobox.find_all("tr")
 
-    in_language = None
-    country = None
+    in_language = []
+    country = []
 
     movie_directors = []
     movie_producers = []
@@ -994,19 +1106,99 @@ def scrape_movie_details(movie_title):
                 running_time = int(running_time.group(1)) if running_time else None
                 print("Running Time:", running_time)
             
-            if "language" in header_text.lower():
-                in_language = re.sub(r'\[.*?\]', '', row.find("td").text.strip())
+            if "language" in header_text.lower() or "languages" in header_text.lower():
+                language_text = row.find("td").text.strip()
+                # Remove any bracketed citations (e.g., [3])
+                language_text = re.sub(r'\[.*?\]', '', language_text)
+                # Split by newline and filter out empty strings
+                in_language = [lang.strip() for lang in language_text.splitlines() if lang.strip()]
                 print("Language:", in_language)
             
-            if "country" in header_text.lower():
-                country = row.find("td").text.strip()
-                print("Country:", country) 
+            if "country" in header_text.lower() or "countries" in header_text.lower():
+                td = row.find("td")
+                if td.find("ul"):
+                    # Extract text from each <li>, cleaning each entry
+                    country = [clean_text(li.get_text(strip=True)) for li in td.find_all("li") if li.get_text(strip=True)]
+                else:
+                    country_text = td.text.strip()
+                    # Remove bracketed content from the whole text
+                    country_text = clean_text(country_text)
+                    # Split by newline and filter out empty strings
+                    country = [c.strip() for c in country_text.splitlines() if c.strip()]
+                print("Country:", country)
+
+    print(country)
     print(movie_name)
     insert_position(positions)
     insert_production_company(production_companies)
     insert_movie(movie_name, release_dates, in_language, running_time, country, production_companies)
     insert_movie_person(connections)
-            
+
+
+def scrape_awards(n):
+    url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
+    page = requests.get(url)
+    soup = BeautifulSoup(page.content, 'lxml')
+
+    awards_table = soup.find("table", {'class': 'wikitable'})
+    if not awards_table:
+        return {}  # return empty dict if no table is found
+
+    awards_details = awards_table.find_all("tr")
+    # dictionary keyed by category text (e.g., "best actor", "best writing", etc.)
+    nominations_by_category = {}
+
+    for row in awards_details:
+        tds = row.find_all("td")
+        for td in tds:
+            div = td.find("div")
+            if div and div.find("b"):
+                # Clean the category to remove any bracketed citations
+                category = clean_category(div.text.strip())
+                if category not in nominations_by_category:
+                    nominations_by_category[category] = []
+                
+                ul = td.find("ul")
+                if ul:
+                    nominees = ul.find_all("li")
+                    for nominee in nominees:
+                        won_tag = nominee.find("b") or nominee.find("i")
+                        if won_tag:
+                            movie_title = won_tag.text.strip()
+                            # check if the movie title contains a dash and markers (‡ or *)
+                            if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
+                                parts = movie_title.split("–")
+                                if len(parts) > 1:
+                                    movie_title = parts[0].strip()
+                                    producer_text = parts[1].strip()
+                                    producer_list = clean_producers(producer_text)
+                                else:
+                                    print(f"Unexpected format for movie title: {movie_title}")
+                                    producer_list = []
+                                nominations_by_category[category].append([movie_title, producer_list, "won"])
+                        normal_tag = nominee.find("ul")
+                        if normal_tag:
+                            details = normal_tag.text.strip()
+                            lines = details.splitlines()
+                            for line in lines:
+                                parts = re.split(r'\s*–\s*', line, maxsplit=1)
+                                if len(parts) == 2:
+                                    title = parts[0].strip()
+                                    producer_text = parts[1].strip()
+                                    producer_list = clean_producers(producer_text)
+                                    nominations_by_category[category].append([title, producer_list])
+                                else:
+                                    print(f"Unexpected format for line: {line}")
+
+    # print out the nominations by category:
+    for cat, nominations in nominations_by_category.items():
+        print(f"Category: {cat}")
+        insert_category(cat)
+        for nomination in nominations:
+            print(nomination)
+    return nominations_by_category
+
+
 
 # actual function to scrape award info data (mainly follows the infobox and gets more data whenever required)
 def scrape_award_info_data(n):
@@ -1236,15 +1428,16 @@ def scrape_data(n):
 
 
 def main():
-    #movie_title = "The Artist (film)"
+    #movie_title = "The Zone of Interest (film)"
     #scrape_movie_details(movie_title)
-    iterations = range(97, 96, -1)  # 97th to 1st
+    scrape_awards(96)
+    '''iterations = range(97, 96, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                print(f"Error in processing a page: {e}")
+                print(f"Error in processing a page: {e}")'''
 
 main()
