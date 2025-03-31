@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup, Tag
 import pymysql
 from datetime import datetime
 import re
+import csv
 import concurrent.futures
 
 # load env variables for db connection
@@ -173,11 +174,11 @@ def insert_award(n, event_date, venue_ids, duration, network):
     conn = connect_db()
     cursor = conn.cursor()
     
-    # Ensure network is a string.
+    # ensure network is a string
     network_param = ', '.join(network) if isinstance(network, list) else network
 
     for venue_id in venue_ids:
-        # Extract the actual venue id from the tuple if necessary.
+        # extract the actual venue id from the tuple if necessary
         vid = venue_id[0] if isinstance(venue_id, tuple) else venue_id
         cursor.execute(
             "SELECT award_edition_id FROM award_edition WHERE edition = %s AND venue_id = %s AND network = %s",
@@ -200,6 +201,46 @@ def insert_award(n, event_date, venue_ids, duration, network):
     conn.commit()
     cursor.close()
     conn.close()
+
+# function to insert award into a CSV file
+def insert_award_csv(n, event_date, venue_ids, duration, network, csv_file="awards.csv"):
+
+    # Ensure network is a string.
+    network_param = ', '.join(network) if isinstance(network, list) else network
+
+    # Prepare data for each venue
+    rows = []
+    for venue_id in venue_ids:
+        vid = venue_id[0] if isinstance(venue_id, tuple) else venue_id
+        try:
+            formatted_date = format_date(event_date)
+            rows.append({
+                "Edition": n,
+                "Year": datetime.strptime(formatted_date, "%Y-%m-%d").year,
+                "Date": formatted_date,
+                "Venue ID": vid,
+                "Duration": duration,
+                "Network": network_param
+            })
+        except Exception as e:
+            print(f"Error formatting date for event {n}: {e}")
+            rows.append({
+                "Edition": n,
+                "Year": "Error",
+                "Date": f"Error: {e}",
+                "Venue ID": vid,
+                "Duration": duration,
+                "Network": network_param
+            })
+
+    # write to CSV
+    file_exists = os.path.isfile(csv_file)
+    with open(csv_file, mode="a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=["Edition", "Year", "Date", "Venue ID", "Duration", "Network"])
+        if not file_exists:
+            writer.writeheader()  # write header only if file doesn't exist
+        writer.writerows(rows)
+    print(f"Award {n} details written to {csv_file}.")
 
 # function to insert new positions into the db
 def insert_position(position_list):
@@ -285,6 +326,134 @@ def insert_person_connection(connection_list):
     conn.close()
 
 
+def insert_movie_person(connection_list):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    for connection in connection_list:
+        movie_name, first_name, last_name, date_of_birth, position = connection
+        # fetch person_id based on first name, last name, and date of birth
+        if date_of_birth:
+            cursor.execute(
+                "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate = %s",
+                (first_name, last_name, date_of_birth)
+            )
+        else:
+            cursor.execute(
+                "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s",
+                (first_name, last_name)
+            )
+        person_id = cursor.fetchone()
+
+        # fetch movie_id based on movie_name 
+        cursor.execute(
+            "SELECT movie_id FROM movie WHERE movie_name = %s",
+            (movie_name,)
+        )
+        movie_id = cursor.fetchone()
+
+        # fetch position_id based on position
+        cursor.execute(
+            "SELECT position_id FROM positions WHERE title = %s",
+            (position,)
+        )
+        position_id = cursor.fetchone()
+
+        # Use logical AND (and) instead of bitwise (&)
+        if person_id and movie_id and position_id:
+            person_id = person_id[0]
+            movie_id = movie_id[0]
+            position_id = position_id[0]
+            # check if the connection already exists
+            cursor.execute(
+                "SELECT * FROM movie_crew WHERE movie_id = %s AND person_id = %s AND position_id = %s",
+                (movie_id, person_id, position_id)
+            )
+            if cursor.fetchone() is None:
+                # Insert the connection into the database
+                cursor.execute(
+                    "INSERT INTO movie_crew (movie_id, person_id, position_id) VALUES (%s, %s, %s)",
+                    (movie_id, person_id, position_id)
+                )
+            else:
+                print(f"Connection for award {movie_name}, person {first_name} {last_name}, position {position} already exists.")
+        else:
+            print(f"Missing data for award {movie_name}, person {first_name} {last_name}, position {position}.")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+#function to insert the movie details gathered from scrape_movie_details
+def insert_movie(movie_name, release_dates, in_language, run_time, country, production_companies):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    for release_date in release_dates:
+        cursor.execute(
+            "SELECT * FROM movie WHERE movie_name = %s AND release_date = %s", (movie_name, release_date)
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO movie (movie_name, release_date, in_language, run_time, country) VALUES (%s, %s, %s, %s, %s)",
+                (movie_name, release_date, in_language, run_time, country)
+            )
+        else: 
+            print(f"Movie {movie_name} already exists.") 
+            continue
+    
+    for company in production_companies:
+        cursor.execute(
+            "SELECT pd_id FROM production_company WHERE company_name = %s", (company)
+        )
+        company_id = cursor.fetchone()
+
+        if company_id:
+            for release_date in release_dates:
+                cursor.execute(
+                    "SELECT movie_id FROM movie WHERE movie_name = %s AND release_date = %s", (movie_name, release_date)
+                )
+                movie_id = cursor.fetchone()
+                if movie_id and company_id:
+                    cursor.execute(
+                        "SELECT * FROM movie_produced_by WHERE movie_id = %s AND pd_id = %s", (movie_id[0], company_id[0])
+                    )
+                    if cursor.fetchone() is None:
+                        cursor.execute(
+                            "INSERT INTO movie_produced_by (movie_id, pd_id) VALUES (%s, %s)", (movie_id[0], company_id[0])
+                        )
+                    else:
+                        print(f"Entry for movie_id={movie_id[0]} and pd_id={company_id[0]} already exists.")
+                else:
+                    print(f"Failed to insert into movie_produced_by: movie_id={movie_id}, company_id={company_id}")
+        else: 
+            print(f"No company with name {company} exists")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def insert_production_company(production_companies):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    for company in production_companies:
+        cursor.execute(
+            "SELECT * FROM production_company WHERE company_name = %s", (company)
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO production_company (company_name) VALUES (%s)", (company)
+            )
+        else:
+            print(f"Company {company} already exists.")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 # function to get the ordinal of a number which will be used in the url
 def ordinal(n):
     if 11 <= n <= 13:
@@ -298,12 +467,42 @@ def format_date(date_str):
     date_clean = re.sub(r'\[.*?\]', '', date_str)
     # remove parenthesized content
     date_full_clean = re.sub(r'\(.*?\)', '', " ".join(date_clean.split()).replace(',', '')).strip()
-    dt = datetime.strptime(date_full_clean, '%d %B %Y')
+    try:
+        dt = datetime.strptime(date_full_clean, '%d %B %Y')
+    except ValueError:
+        try:
+            dt = datetime.strptime(date_full_clean, '%B %d %Y')  # handle 'March 2 2025' format
+        except ValueError:
+            raise ValueError(f"Date format not recognized: {date_full_clean}")
     return dt.strftime("%Y-%m-%d")
+
+def format_movie_date(date_str):
+    # remove any parenthesized content (like "(Cannes)" or "(United States)")
+    cleaned = re.sub(r'\(.*?\)', '', date_str).strip()
+    # remove any trailing commas
+    cleaned = cleaned.strip(', ')
+    
+    # check if the cleaned date contains a 4-digit year
+    if not re.search(r'\b\d{4}\b', cleaned):
+        print(f"Error formatting date '{date_str}': Date format not recognized: {cleaned}")
+        return None
+
+    # try two common formats:
+    possible_formats = ["%B %d, %Y", "%d %B %Y"]
+    for fmt in possible_formats:
+        try:
+            dt = datetime.strptime(cleaned, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+
+    print(f"Error formatting date '{date_str}': Date format not recognized: {cleaned}")
+    return None
+
 
 # function to format the site location
 def format_site(site_str):
-    print("Site String:", site_str)
+    #print("Site String:", site_str)
     # remove any bracketed content (including newlines)
     site_clean = re.sub(r'\[.*?\]', '', site_str, flags=re.DOTALL)
     # remove parentheses while keeping their content intact
@@ -548,10 +747,7 @@ def scrape_movie_details(movie_title):
         return
     movie_details = movie_infobox.find_all("tr")
 
-    movie_name = None
-    release_date = None
     in_language = None
-    run_time = None
     country = None
 
     movie_directors = []
@@ -591,13 +787,13 @@ def scrape_movie_details(movie_title):
                 if movie_directors:
                     print("Formatted Director:", movie_directors)
                     person_details = scrape_person_list(movie_directors)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Director) Birth Date:", birth_date)
                         print("(Director) Birth Country:", birth_country)
-                        print("(Director) Death Date:", death_date)'''
-                        #if i < len(movie_directors):
-                            #insert_person([movie_directors[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_directors[i][0], movie_directors[i][-1], birth_date, "Director"))
+                        print("(Director) Death Date:", death_date)
+                        if i < len(movie_directors):
+                            insert_person([movie_directors[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_directors[i][0], movie_directors[i][-1], birth_date, "Director"))
             if "written by" in header_text.lower():
                 positions.append("Writer")
                 td = row.find("td")
@@ -615,15 +811,15 @@ def scrape_movie_details(movie_title):
                     else:
                         movie_writers = [format_person(td.text.strip())]
                 if movie_writers:
-                    print("Formatted Director:", movie_writers)
+                    print("Formatted Writer:", movie_writers)
                     person_details = scrape_person_list(movie_writers)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Writer) Birth Date:", birth_date)
                         print("(Writer) Birth Country:", birth_country)
-                        print("(Writer) Death Date:", death_date)'''
-                        #if i < len(movie_writers):
-                            #insert_person([movie_writers[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_writers[i][0], movie_writers[i][-1], birth_date, "Director"))
+                        print("(Writer) Death Date:", death_date)
+                        if i < len(movie_writers):
+                            insert_person([movie_writers[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_writers[i][0], movie_writers[i][-1], birth_date, "Writer"))
 
             if "produced by" in header_text.lower():
                 positions.append("Producer")
@@ -644,13 +840,13 @@ def scrape_movie_details(movie_title):
                 if movie_producers:
                     print("Formatted Producer:", movie_producers)
                     person_details = scrape_person_list(movie_producers)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Producer) Birth Date:", birth_date)
                         print("(Producer) Birth Country:", birth_country)
-                        print("(Producer) Death Date:", death_date)'''
-                        #if i < len(movie_producers):
-                            #insert_person([movie_producers[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_producers[i][0], movie_producers[i][-1], birth_date, "Director"))
+                        print("(Producer) Death Date:", death_date)
+                        if i < len(movie_producers):
+                            insert_person([movie_producers[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_producers[i][0], movie_producers[i][-1], birth_date, "Producer"))
 
             if "starring" in header_text.lower():
                 positions.append("Star")
@@ -671,13 +867,13 @@ def scrape_movie_details(movie_title):
                 if movie_stars:
                     print("Formatted Stars:", movie_stars)
                     person_details = scrape_person_list(movie_stars)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Stars) Birth Date:", birth_date)
                         print("(Stars) Birth Country:", birth_country)
-                        print("(Stars) Death Date:", death_date)'''
-                        #if i < len(movie_stars):
-                            #insert_person([movie_stars[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_stars[i][0], movie_stars[i][-1], birth_date, "Director"))
+                        print("(Stars) Death Date:", death_date)
+                        if i < len(movie_stars):
+                            insert_person([movie_stars[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_stars[i][0], movie_stars[i][-1], birth_date, "Star"))
                             
             if "cinematography" in header_text.lower():
                 positions.append("Cinematographer")
@@ -698,13 +894,13 @@ def scrape_movie_details(movie_title):
                 if movie_cinematography:
                     print("Formatted Cinematographer:", movie_cinematography)
                     person_details = scrape_person_list(movie_cinematography)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Cinematographer) Birth Date:", birth_date)
                         print("(Cinematographer) Birth Country:", birth_country)
-                        print("(Cinematographer) Death Date:", death_date)'''
-                        #if i < len(movie_cinematography):
-                            #insert_person([movie_cinematography[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_cinematography[i][0], movie_cinematography[i][-1], birth_date, "Director"))
+                        print("(Cinematographer) Death Date:", death_date)
+                        if i < len(movie_cinematography):
+                            insert_person([movie_cinematography[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_cinematography[i][0], movie_cinematography[i][-1], birth_date, "Cinematographer"))
 
             if "edited by" in header_text.lower():
                 positions.append("Editor")
@@ -725,13 +921,13 @@ def scrape_movie_details(movie_title):
                 if movie_editor:
                     print("Formatted Editor:", movie_editor)
                     person_details = scrape_person_list(movie_editor)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Editor) Birth Date:", birth_date)
                         print("(Editor) Birth Country:", birth_country)
-                        print("(Editor) Death Date:", death_date)'''
-                        #if i < len(movie_editor):
-                            #insert_person([movie_editor[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_editor[i][0], movie_editor[i][-1], birth_date, "Director"))
+                        print("(Editor) Death Date:", death_date)
+                        if i < len(movie_editor):
+                            insert_person([movie_editor[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_editor[i][0], movie_editor[i][-1], birth_date, "Editor"))
 
             if "music by" in header_text.lower():
                 positions.append("Composer")
@@ -752,67 +948,65 @@ def scrape_movie_details(movie_title):
                 if movie_music:
                     print("Formatted Composer:", movie_music)
                     person_details = scrape_person_list(movie_music)
-                    '''for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
                         print("(Composer) Birth Date:", birth_date)
                         print("(Composer) Birth Country:", birth_country)
-                        print("(Composer) Death Date:", death_date)'''
-                        #if i < len(movie_music):
-                            #insert_person([movie_music[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, movie_music[i][0], movie_music[i][-1], birth_date, "Director"))
+                        print("(Composer) Death Date:", death_date)
+                        if i < len(movie_music):
+                            insert_person([movie_music[i]], [birth_date, birth_country, death_date])
+                            connections.append((movie_name, movie_music[i][0], movie_music[i][-1], birth_date, "Composer"))
 
-
-            if "production company" in header_text.lower():
+            if "production" in header_text.lower():
                 td = row.find("td")
                 li_items = td.find_all("li")
                 if li_items:
                     for li in li_items:
                         text = li.get_text(strip=True)
-                        production_companies.append(format_person(text))
+                        production_companies.append(text)
                 else:
                     links = td.find_all("a")
                     if links:
                         for a in links:
                             text = a.text.strip()
-                            production_companies.append(format_person(text))
+                            production_companies.append(text)
                     else:
-                        production_companies = [format_person(td.text.strip())]
+                        production_companies = [td.text.strip()]
                 if production_companies:
                     print("Formatted Production Companies:", production_companies)
-                        #if i < len(production_companies):
-                            #insert_person([production_companies[i]], [birth_date, birth_country, death_date])
-                            #connections.append((n, production_companies[i][0], production_companies[i][-1], birth_date, "Director"))
 
             if "release dates" in header_text.lower():
                 dates_text = row.find("td").text.strip()
-                # Split by newline or comma; adjust the regex if your format is different
-                dates_list = re.split(r'[\n,]+', dates_text)
+                # split only on newlines to preserve the comma in dates like "May 21, 2024 (Cannes)"
+                dates_list = re.split(r'\n+', dates_text)
                 for date in dates_list:
                     date = date.strip()
                     if date:
                         try:
-                            formatted_date = format_date(date)
+                            formatted_date = format_movie_date(date)
                             release_dates.append(formatted_date)
                         except Exception as e:
                             print(f"Error formatting date '{date}': {e}")
                 for release in release_dates:
                     print("Release Date:", release)
 
-            
             if "running time" in header_text.lower():
                 running_time = re.search(r'(\d+)\s*minutes?', row.find("td").text.strip(), re.IGNORECASE)
                 running_time = int(running_time.group(1)) if running_time else None
                 print("Running Time:", running_time)
             
+            if "language" in header_text.lower():
+                in_language = re.sub(r'\[.*?\]', '', row.find("td").text.strip())
+                print("Language:", in_language)
+            
             if "country" in header_text.lower():
                 country = row.find("td").text.strip()
-                print("Country:", country)
-
-
-
-
-
-
-
+                print("Country:", country) 
+    print(movie_name)
+    insert_position(positions)
+    insert_production_company(production_companies)
+    insert_movie(movie_name, release_dates, in_language, running_time, country, production_companies)
+    insert_movie_person(connections)
+            
 
 # actual function to scrape award info data (mainly follows the infobox and gets more data whenever required)
 def scrape_award_info_data(n):
@@ -848,7 +1042,7 @@ def scrape_award_info_data(n):
                 td = row.find("td")
                 # get the raw text while preserving newlines and remove bracketed content
                 raw_text = re.sub(r'\[.*?\]', '', td.get_text(separator="\n").strip()).strip()
-                print("Raw Site (full text):", raw_text)
+                #print("Raw Site (full text):", raw_text)
                 links = td.find_all("a")
                 # if there are exactly 2 links, assume one location
                 if links and len(links) == 2 | 3:
@@ -1024,7 +1218,7 @@ def scrape_award_info_data(n):
             if "best picture" in header_text.lower():
                 td = row.find("td")
                 raw_best_picture = td.text.strip()
-               # best_picture_details = 
+                scrape_movie_details(raw_best_picture)
 
     insert_position(positions)
     insert_award(n, event_date, venue_id, event_duration, event_network) 
@@ -1042,15 +1236,15 @@ def scrape_data(n):
 
 
 def main():
-    movie_title = "The Artist (film)"
-    scrape_movie_details(movie_title)
-    ''' iterations = range(97, 96, -1)  # 97th to 1st
+    #movie_title = "The Artist (film)"
+    #scrape_movie_details(movie_title)
+    iterations = range(97, 96, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                print(f"Error in processing a page: {e}")'''
+                print(f"Error in processing a page: {e}")
 
 main()
