@@ -124,29 +124,32 @@ def insert_person(person_list, person_info):
     conn = connect_db()
     cursor = conn.cursor()
     
-    # Flatten each element in person_list (if needed)
     flattened_person_list = []
     for person in person_list:
-        # Use a helper function 'flatten' to get a string representation.
-        # This ensures that if person is a list, we get a concatenated string.
-        flat_person = flatten(person)
+        # Extract only the name, ensuring links are ignored
+        if isinstance(person, list):
+            person = [p for p in person if not is_link(p)]  # Remove links
+        flat_person = flatten(person)  # Convert to a single name string
         if flat_person:
             flattened_person_list.append(flat_person)
     
     for person in flattened_person_list:
         # Remove empty or whitespace-only items.
-        # Now, person should be a string like "First Middle Last" or "First Last"
         parts = person.split()  # Splitting by whitespace
+        
+        if not parts:
+            continue  # Skip empty entries
+
         first_name = parts[0]
+        middle_name = None
+        last_name = ""
+
         if len(parts) == 3:
             middle_name = parts[1]
             last_name = parts[2]
         elif len(parts) >= 2:
-            middle_name = None
             last_name = parts[1]
-        else:
-            middle_name = None
-            last_name = ""
+        
         date_of_birth = person_info[0]
         birth_country = person_info[1]
         date_of_death = person_info[2]
@@ -165,6 +168,10 @@ def insert_person(person_list, person_info):
                 WHERE first_name = %s AND last_name = %s
             """
             cursor.execute(select_query, (first_name, last_name))
+
+        if isinstance(birth_country, (int, float)) or str(birth_country).isdigit():
+            birth_country = None
+
         if cursor.fetchone() is None:
             cursor.execute(
                 "INSERT INTO person (first_name, middle_name, last_name, birthDate, country, deathDate) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -172,9 +179,25 @@ def insert_person(person_list, person_info):
             )
         else:
             print(f"Person '{first_name} {last_name}' already exists.")
+    
     conn.commit()
     cursor.close()
     conn.close()
+    
+def is_link(text):
+    """Check if a string is a URL or a Wikipedia link (/wiki/ or /w/)."""
+    if not isinstance(text, str):  # Ensure text is a string before matching
+        return False
+    return bool(re.match(r'https?://\S+|^/wiki/|^/w/', text))  # Detects full URLs, /wiki/, and /w/
+
+def flatten(item):
+    """Recursively flattens nested lists into a single string, skipping None values."""
+    if isinstance(item, list):
+        return " ".join(flatten(subitem) for subitem in item if subitem is not None)
+    elif isinstance(item, str):
+        return item.strip()
+    else:
+        return str(item)
 
 
 # function to get the venue id
@@ -507,20 +530,21 @@ def insert_category(cat):
     conn = connect_db()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT * FROM category WHERE category_name = %s", (cat,)  # Add a comma to make it a tuple
-    )
-    if cursor.fetchone() is None:
-        cursor.execute(
-            "INSERT INTO category (category_name) VALUES (%s)", (cat,)  # Corrected syntax
-        )
-        conn.commit()  # Commit only when inserting
+    # Query for the category.
+    cursor.execute("SELECT category_id FROM category WHERE category_name = %s", (cat,))
+    row = cursor.fetchone()
+    if row is None:
+        cursor.execute("INSERT INTO category (category_name) VALUES (%s)", (cat,))
+        conn.commit()
+        # Requery to get the new category id.
+        cursor.execute("SELECT category_id FROM category WHERE category_name = %s", (cat,))
+        row = cursor.fetchone()
     else:
         print(f"Category '{cat}' already exists.")
-
+    
     cursor.close()
     conn.close()
-
+    return row[0] if row else None
 
 
 
@@ -543,20 +567,159 @@ def insert_production_company(production_companies):
     cursor.close()
     conn.close()
 
+def award_edition_exists(n):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT award_edition_id FROM award_edition WHERE edition = %s", (n,))
+    result = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if result: 
+        # If result is already a tuple just return it.
+        # But if it is an int, wrap it in a tuple.
+        if isinstance(result, int):
+            return (result,)
+        return result
+    return None
+
+def movie_exists(movie_name):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,))
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    # Return a tuple (or the full row) rather than an int
+    if result:
+        # If result is already a tuple (e.g., (movie_id,)) just return it.
+        # But if it is an int, wrap it in a tuple.
+        if isinstance(result, int):
+            return (result,)
+        return result
+    return None
+
+
+def person_exists(fullname, birthdate, ignore=None):
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    print("Fullname and birthdate:", fullname, birthdate)
+    
+    # Normalize fullname:
+    # If the first element is a list, use it; otherwise, assume fullname is already flat.
+    if isinstance(fullname[0], list):
+        name_parts = fullname[0]
+    else:
+        name_parts = fullname
+
+    # Remove any parts that are empty or whitespace.
+    name_parts = [part.strip() for part in name_parts if part.strip()]
+    
+    # Depending on the number of parts, assign first, (optional middle) and last.
+    if len(name_parts) == 2:
+        fname, lname = name_parts
+        mname = None
+    elif len(name_parts) >= 3:
+        fname, mname, lname = name_parts[0], name_parts[1], name_parts[-1]
+    else:
+        # If there's only one part, assign it to fname and leave others empty.
+        fname = name_parts[0]
+        lname = ""
+        mname = None
+
+    print("Parsed name -> First:", fname, "Middle:", mname, "Last:", lname)
+    
+    # Ensure birthdate is a scalar (if it's a tuple/list, take the first element)
+    if birthdate is not None and isinstance(birthdate, (tuple, list)):
+        birthdate = birthdate[0]
+    
+    print("Using birthdate:", birthdate)
+    
+    # Use the birthdate in the query if provided and nonempty.
+    if birthdate and birthdate.strip():
+        cursor.execute(
+            "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate = %s",
+            (fname, lname, birthdate)
+        )
+    else:
+        # If no birthdate is provided, include middle_name if available.
+        if mname:
+            cursor.execute(
+                "SELECT person_id FROM person WHERE first_name = %s AND middle_name = %s AND last_name = %s AND birthDate IS NULL",
+                (fname, mname, lname)
+            )
+        else:
+            cursor.execute(
+                "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate IS NULL",
+                (fname, lname)
+            )
+    
+    person_id = cursor.fetchone()  # Fetch result
+    cursor.close()
+    conn.close()
+    
+    return person_id[0] if person_id else None
+
+def insert_nomination_one(award_edition_id, movie_id, category_id, won, submitted_by=None):
+    """
+    Insert a nomination record into the nomination table.
+    """
+    conn = connect_db()
+    cursor = conn.cursor()
+    query = """
+        INSERT INTO nomination (award_edition_id, movie_id, category_id, won, submitted_by)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    cursor.execute(query, (award_edition_id, movie_id, category_id, won, submitted_by))
+    nomination_id = cursor.lastrowid  # Get the auto-generated nomination_id
+    print("nomid:", nomination_id)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return nomination_id
+
+def insert_nomination_person(nomination_id, person_id, position_id):
+    """
+    Insert a nomination-person record into the nomination_person table.
+    """
+    conn = connect_db()
+    cursor = conn.cursor()
+    query = """
+        INSERT INTO nomination_person (nomination_id, person_id, position_id)
+        VALUES (%s, %s, %s)
+    """
+    cursor.execute(query, (nomination_id, person_id, position_id))
+    print("query,", nomination_id, person_id, position_id)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 def insert_nominations(award_no, nominations_by_category, link_by):
     conn = connect_db()
     cursor = conn.cursor()
 
-    formatted_person_list = []
+    # This list collects persons that need scraping.
+    persons_to_scrape = []
+
     cursor.execute(
         "SELECT award_edition_id FROM award_edition WHERE edition = %s", (award_no,)
     )
-    award_id = cursor.fetchone()
+    award_id_row = cursor.fetchone()
+    if not award_id_row:
+        print(f"No award edition found for award number {award_no}")
+        return
+    award_id = award_id_row[0]
 
-    print("here")
+    print("nominations_by_category:", nominations_by_category)
+    
     for cat, nominations in nominations_by_category.items():
+        print("here")
         print(f"Category: {cat}")
-        insert_category(cat)
+        # insert_category should now return a category_id.
+        category_id = insert_category(cat)
+        # Categories where the nomination data structure is different
         if "actor" in cat.lower() or "actress" in cat.lower() or "directing" in cat.lower():
             for nomination in nominations:
                 if len(nomination) == 4:
@@ -568,21 +731,70 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     print(f"Unexpected format in nomination: {nomination}")
                     continue
 
-                for movie in movie_name:
-                    movie_link = link_by.get(movie)
+                # Check if movie details already exist before scraping.
+                movie_id_row = movie_exists(movie_name)
+                if not movie_id_row:
+                    # If movie_name is iterable (e.g. a list of titles), iterate through it.
+                    for movie in movie_name:
+                        movie_link = link_by.get(movie)
+                    scrape_movie_details(movie_title=movie_name, movie_link=movie_link)
+                    movie_id_row = movie_exists(movie_name)
+                    if not movie_id_row:
+                        print(f"Failed to get movie id for '{movie_name}'. Skipping nomination.")
+                        continue
+                else:
+                    print(f"Movie '{movie_name}' already exists, skipping scrape.")
+
+                # Extract movie_id from the row.
+                movie_id = movie_id_row[0]
+
+                # Determine the win flag based on status (adjust logic as needed).
+                won_flag = 1 if status and "win" in status.lower() else 0
+
+                # Insert the nomination record.
+                nomination_id = insert_nomination_one(award_id, movie_id, category_id, won_flag, None)
+                print(f"Inserted nomination record (ID: {nomination_id}) for movie '{movie_name}' in category '{cat}'.")
+
+                # Always add the person for scraping.
                 person_link = link_by.get(person_name)
-                scrape_movie_details(movie_title=movie_name, movie_link=movie_link)
                 formatted_person = format_person(person_name)
-                formatted_person_list.append([formatted_person, person_link])
-                print (formatted_person_list)
-                person_details = scrape_person_list([formatted_person], "director")
-                for birth_date, birth_country, death_date in person_details:
-                    print("(nomin) Birth Date:", birth_date)
-                    print("(nomin) Birth Country:", birth_country)
-                    print("(nomin) Death Date:", death_date)
+                # Split name into parts.
+                fname_part, lname_part = (formatted_person.split(" ", 1)
+                                          if " " in formatted_person else (formatted_person, ""))
+                persons_to_scrape.append([formatted_person, person_link])
                 print(nomination)
 
+                # If we have accumulated persons to scrape, process them.
+                if persons_to_scrape:
+                    # Scrape and obtain details (including birth_date).
+                    person_details = scrape_person_list([p[0] for p in persons_to_scrape], "director")
+                    for (formatted_person, p_link), (birth_date, birth_country, death_date) in zip(persons_to_scrape, person_details):
+                        name_parts = (formatted_person.split(" ", 1)
+                                                  if " " in formatted_person else (formatted_person, ""))
+                        # Ensure that birth_date is a scalar value.
+                        bd = birth_date[0] if isinstance(birth_date, (tuple, list)) else birth_date
+
+                        # Now check if this person already exists using the scraped birth_date.
+                        person_id = person_exists(name_parts, bd)
+                        if person_id:
+                            print(f"Person '{formatted_person}' (born {bd}) already exists, skipping insertion.")
+                        else:
+                            # Insert the new person record if desired.
+                            # For example: insert_person(fname, lname, bd, birth_country, death_date)
+                            print(f"Inserting person '{formatted_person}' with birth date {bd}")
+                        print("(nomin) Birth Date:", bd)
+                        print("(nomin) Birth Country:", birth_country)
+                        print("(nomin) Death Date:", death_date)
+                        # If person exists, link them with the nomination.
+                        if person_id:
+                            # Set position_id based on role; here we default to 1.
+                            position_id = 1
+                            insert_nomination_person(nomination_id, person_id, position_id)
+                            print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}) as position {position_id}.")
+                    persons_to_scrape.clear()
+
         else:
+            # For categories where nominations come with a list of persons.
             for nomination in nominations:
                 if len(nomination) == 4:
                     movie_name, person_list, status, _ = nomination  # discard provided link
@@ -592,33 +804,67 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 else:
                     print(f"Unexpected format in nomination: {nomination}")
                     continue
-                movie_link = link_by.get(movie_name)
-                link = movie_link  # default to movie_link if exists
-                if movie_link is None:
-                    for person in person_list:
-                        link = link_by.get(person)
-                        if link:
-                            break
 
-                print("Link used:", link)
-                scrape_movie_details(movie_title=movie_name, movie_link=link)
+                # Check if movie exists before scraping.
+                movie_link = link_by.get(movie_name)
+                movie_id_row = movie_exists(movie_name)
+                if not movie_id_row:
+                    link = movie_link  # default to movie_link if available
+                    if movie_link is None:
+                        # try finding a link from the person list if movie link is missing.
+                        for person in person_list:
+                            link = link_by.get(person)
+                            if link:
+                                break
+                    print("Link used:", link)
+                    scrape_movie_details(movie_title=movie_name, movie_link=link)
+                    movie_id_row = movie_exists(movie_name)
+                    if not movie_id_row:
+                        print(f"Failed to get movie id for '{movie_name}'. Skipping nomination.")
+                        continue
+                else:
+                    print(f"Movie '{movie_name}' already exists, skipping scrape.")
+
+                movie_id = movie_id_row[0]
+                won_flag = 1 if status and "win" in status.lower() else 0
+                nomination_id = insert_nomination_one(award_id, movie_id, category_id, won_flag, None)
+                print(f"Inserted nomination record (ID: {nomination_id}) for movie '{movie_name}' in category '{cat}'.")
+
+                # Process each person in the list.
                 for person in person_list:
                     person_link = link_by.get(person)
                     formatted_person = format_person(person)
-                    formatted_person_list.append([formatted_person, person_link])
-                person_details = scrape_person_list(formatted_person_list, "director")
-                for birth_date, birth_country, death_date in person_details:
-                    print("(nomin) Birth Date:", birth_date)
-                    print("(nomin) Birth Country:", birth_country)
-                    print("(nomin) Death Date:", death_date)
+                    name_parts = (formatted_person.split(" ", 1)
+                                  if " " in formatted_person else (formatted_person, ""))
+                    persons_to_scrape.append([formatted_person, person_link])
+
+                if persons_to_scrape:
+                    person_details = scrape_person_list([p[0] for p in persons_to_scrape], "director")
+                    for (formatted_person, p_link), (birth_date, birth_country, death_date) in zip(persons_to_scrape, person_details):
+                        name_parts = (formatted_person.split(" ", 1)
+                                      if " " in formatted_person else (formatted_person, ""))
+                        bd = birth_date[0] if isinstance(birth_date, (tuple, list)) else birth_date
+                        #print("NOWWW,",name_parts)
+                        full_name, _ = name_parts
+                        #print("NOWWWs,",full_name)
+                        person_id = person_exists(full_name, bd)
+                        if person_id:
+                            print(f"Person '{formatted_person}' (born {bd}) already exists, skipping insertion.")
+                        else:
+                            print(f"Inserting person '{formatted_person}' with birth date {bd}")
+                        print("(nomin) Birth Date:", bd)
+                        print("(nomin) Birth Country:", birth_country)
+                        print("(nomin) Death Date:", death_date)
+                        if person_id:
+                            position_id = 1  # Default position id; change as needed.
+                            insert_nomination_person(nomination_id, person_id, position_id)
+                            print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}) as position {position_id}.")
+                    persons_to_scrape.clear()
                 print(nomination)
 
     conn.commit()
     cursor.close()
     conn.close()
-
-
-    
 
 # function to get the ordinal of a number which will be used in the url
 def ordinal(n):
@@ -689,19 +935,25 @@ def format_site(site_str):
     return parts
 
 
-# function to format the people who hosted the event
 def format_person(host_str):
     if isinstance(host_str, list):
         formatted_hosts = []
         for host in host_str:
-            host_clean = re.sub(r'\[.*?\]', '', host)
+            # Remove citations and extra characters.
+            host_clean = re.sub(r'\[.*?\]', '', host).strip()
+            # If the host string starts with '#', ignore it.
+            if host_clean.startswith("#"):
+                continue
             words = host_clean.split()  # split into a list of words
             formatted_hosts.extend(words)  # extend the list instead of appending
         return formatted_hosts
     else:
-        host_clean = re.sub(r'\[.*?\]', '', host_str)
+        host_clean = re.sub(r'\[.*?\]', '', host_str).strip()
+        # If the host string starts with '#', return an empty list.
+        if host_clean.startswith("#"):
+            return []
         return host_clean.split()
-    
+
 # function to format raw text into multiple locations
 def format_site_multi(raw_text):
     # remove bracketed text that appears on its own lines (including its surrounding newline characters)
@@ -866,14 +1118,6 @@ def clean_category(category_text):
     # Remove any content in square brackets, then strip and lowercase.
     return re.sub(r'\[.*?\]', '', category_text).strip().lower()
 
-def flatten(item):
-    """Recursively flattens nested lists into a single string, skipping None values."""
-    if isinstance(item, list):
-        return " ".join(flatten(subitem) for subitem in item if subitem is not None)
-    elif isinstance(item, str):
-        return item.strip()
-    else:
-        return str(item)
 
 def scrape_person_list(person_list, entity_type=None):
     results = []
@@ -932,11 +1176,14 @@ def scrape_person_list(person_list, entity_type=None):
                         birth_date_span = row.find("span", {'class': 'bday'})
                         if birth_date_span:
                             person_birth_date = birth_date_span.text.strip()
+                            # if only a year is provided, append "-01-01" to form a complete date.
+                            if len(person_birth_date) == 4:
+                                person_birth_date = person_birth_date + "-01-01"
                             print("Birth Date:", person_birth_date)
                         birthplace_div = row.find("div", {'class': 'birthplace'})
                         if birthplace_div:
                             person_birth_country = birthplace_div.text.strip()
-                            person_birth_country = re.sub(r'[\)\]]', '', person_birth_country).strip()
+                            person_birth_country = re.sub(r'[\[\]\d]', '', person_birth_country).strip()
                             parts = [part.strip() for part in person_birth_country.split(",") if part.strip()]
                             if parts:
                                 person_birth_country = parts[-1]
@@ -1031,10 +1278,11 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                 li_items = td.find_all("li")
                 if li_items:
                     for li in li_items:
-                        # Check for all <a> tags in this list item
                         a_tags = li.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
+                                if a_tag.find_parent("sup"):
+                                    continue
                                 director_text = a_tag.text.strip()
                                 link = a_tag.get("href", None)
                                 movie_directors.append([format_person(director_text), link])
@@ -1042,10 +1290,11 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                             director_text = li.get_text(strip=True)
                             movie_directors.append([format_person(director_text), None])
                 else:
-                    # Fallback to processing <a> tags directly in td
                     links = td.find_all("a")
                     if links:
                         for a in links:
+                            if a.find_parent("sup"):
+                                continue
                             director_text = a.text.strip()
                             link = a.get("href", None)
                             movie_directors.append([format_person(director_text), link])
@@ -1072,6 +1321,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                         a_tags = li.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
+                                if a_tag.find_parent("sup"):
+                                    continue
                                 writer_text = a_tag.text.strip()
                                 link = a_tag.get("href", None)
                                 movie_writers.append([format_person(writer_text), link])
@@ -1082,6 +1333,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     links = td.find_all("a")
                     if links:
                         for a in links:
+                            if a.find_parent("sup"):
+                                continue
                             writer_text = a.text.strip()
                             link = a.get("href", None)
                             movie_writers.append([format_person(writer_text), link])
@@ -1107,19 +1360,23 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                         a_tags = li.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
-                                producer_text = a_tag.text.strip()
+                                if a_tag.find_parent("sup"):
+                                    continue
+                                prod_text = a_tag.text.strip()
                                 link = a_tag.get("href", None)
-                                movie_producers.append([format_person(producer_text), link])
+                                movie_producers.append([format_person(prod_text), link])
                         else:
-                            producer_text = li.get_text(strip=True)
-                            movie_producers.append([format_person(producer_text), None])
+                            prod_text = li.get_text(strip=True)
+                            movie_producers.append([format_person(prod_text), None])
                 else:
                     links = td.find_all("a")
                     if links:
                         for a in links:
-                            producer_text = a.text.strip()
+                            if a.find_parent("sup"):
+                                continue
+                            prod_text = a.text.strip()
                             link = a.get("href", None)
-                            movie_producers.append([format_person(producer_text), link])
+                            movie_producers.append([format_person(prod_text), link])
                     else:
                         movie_producers.append([format_person(td.text.strip()), None])
                 if movie_producers:
@@ -1142,6 +1399,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                         a_tags = li.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
+                                if a_tag.find_parent("sup"):
+                                    continue
                                 star_text = a_tag.text.strip()
                                 link = a_tag.get("href", None)
                                 movie_stars.append([format_person(star_text), link])
@@ -1152,6 +1411,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     links = td.find_all("a")
                     if links:
                         for a in links:
+                            if a.find_parent("sup"):
+                                continue
                             star_text = a.text.strip()
                             link = a.get("href", None)
                             movie_stars.append([format_person(star_text), link])
@@ -1177,6 +1438,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                         a_tags = li.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
+                                # Skip if the <a> is within a <sup> element.
+                                if a_tag.find_parent("sup"):
+                                    continue
                                 cine_text = a_tag.text.strip()
                                 link = a_tag.get("href", None)
                                 movie_cinematography.append([format_person(cine_text), link])
@@ -1187,6 +1451,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     links = td.find_all("a")
                     if links:
                         for a in links:
+                            # Skip if the <a> is within a <sup> element.
+                            if a.find_parent("sup"):
+                                continue
                             cine_text = a.text.strip()
                             link = a.get("href", None)
                             movie_cinematography.append([format_person(cine_text), link])
@@ -1236,8 +1503,18 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                         print("(Editor) Death Date:", death_date)
                         if i < len(movie_editor):
                             insert_person([movie_editor[i]], [birth_date, birth_country, death_date])
-                            connections.append((movie_name, movie_editor[i][0][0], movie_editor[i][0][-1], birth_date, "Editor"))
-
+                            # handle the case where format_person returns a list.
+                            name_value = movie_editor[i][0]
+                            if isinstance(name_value, list):
+                                if name_value:  # list is non-empty
+                                    fname = name_value[0]
+                                    lname = name_value[-1] if len(name_value) > 1 else ""
+                                else:
+                                    fname, lname = "", ""
+                            else:
+                                name_parts = name_value.split(" ", 1)
+                                fname, lname = name_parts if len(name_parts) == 2 else (name_parts[0], "")
+                            connections.append((movie_name, fname, lname, birth_date, "Editor"))
             # --- Composers (Music By) ---
             if "music by" in header_text:
                 positions.append("Composer")
@@ -1247,6 +1524,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                         a_tags = li.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
+                                # Skip if the <a> is inside a <sup> tag.
+                                if a_tag.find_parent("sup"):
+                                    continue
                                 composer_text = a_tag.text.strip()
                                 link = a_tag.get("href", None)
                                 movie_music.append([format_person(composer_text), link])
@@ -1257,6 +1537,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     links = td.find_all("a")
                     if links:
                         for a in links:
+                            # Skip any <a> that is within a <sup> tag.
+                            if a.find_parent("sup"):
+                                continue
                             composer_text = a.text.strip()
                             link = a.get("href", None)
                             movie_music.append([format_person(composer_text), link])
@@ -1355,9 +1638,23 @@ def scrape_awards(n):
     page = requests.get(url)
     soup = BeautifulSoup(page.content, 'lxml')
 
-    awards_table = soup.find("table", {'class': 'wikitable'})
-    if not awards_table:
+    # Find all table elements and filter for those with strictly class "wikitable"
+    all_tables = soup.find_all("table")
+    awards_tables = [
+        table for table in all_tables 
+        if table.get("class") is not None and set(table.get("class")) == {"wikitable"}
+    ]
+    
+    # If there are more than one, take the second one; otherwise, take the first if it exists.
+    if len(awards_tables) >= 2:
+        awards_table = awards_tables[1]
+    elif awards_tables:
+        awards_table = awards_tables[0]
+    else:
+        print("No strictly 'wikitable' found on the page.")
         return {}  # return empty dict if no table is found
+
+    print(awards_table)
 
     awards_details = awards_table.find_all("tr")
     # dictionary keyed by category text (e.g., "best actor", "best writing", etc.)
@@ -1422,239 +1719,239 @@ def scrape_awards(n):
                                 else:
                                     print(f"Unexpected format for line: {line}")
 
-    # Print out the nominations by category:
     for cat, nominations in nominations_by_category.items():
         print(f"Category: {cat}")
-        insert_category(cat)
         for nomination in nominations:
             print(nomination)
     
-    # Optionally, print out the person links:
     for person, link in link_by_person.items():
         print(f"Person: {person}, Link: {link}")
 
-    # Optionally insert nominations into your storage system:
+    #print(nominations_by_category)
     insert_nominations(n, nominations_by_category, link_by_person)
-    
+
     return nominations_by_category
 
 
 
 # actual function to scrape award info data (mainly follows the infobox and gets more data whenever required)
 def scrape_award_info_data(n):
-    url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
-    page = requests.get(url)
-    soup = BeautifulSoup(page.content, 'lxml')
-    award_infobox = soup.find("table", {'class': 'infobox vevent'})
-    award_details = award_infobox.find_all("tr")
+    if award_edition_exists(n) is None:
+        url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
+        page = requests.get(url)
+        soup = BeautifulSoup(page.content, 'lxml')
+        award_infobox = soup.find("table", {'class': 'infobox vevent'})
+        award_details = award_infobox.find_all("tr")
 
-    event_date = None
-    event_site = None
-    event_host = None
-    event_preshowhost = None
-    event_producer = None
-    event_director = None
-    event_network = None
-    event_duration = None
+        event_date = None
+        event_site = None
+        event_host = None
+        event_preshowhost = None
+        event_producer = None
+        event_director = None
+        event_network = None
+        event_duration = None
 
-    venue_id = []
-    positions = []
-    connections = []
+        venue_id = []
+        positions = []
+        connections = []
 
-    # dynamically find the indices for date, site, and host
-    for row in award_details:
-        header = row.find("th")
-        if header:
-            header_text = header.text.strip()
-            if "date" in header_text.lower():
-                event_date = row.find("td").text.strip()
-                print("Date:", format_date(event_date))
+        # dynamically find the indices for date, site, and host
+        for row in award_details:
+            header = row.find("th")
+            if header:
+                header_text = header.text.strip()
+                if "date" in header_text.lower():
+                    event_date = row.find("td").text.strip()
+                    print("Date:", format_date(event_date))
 
-            if "site" in header_text.lower():
-                td = row.find("td")
-                # get the raw text while preserving newlines and remove bracketed content
-                raw_text = re.sub(r'\[.*?\]', '', td.get_text(separator="\n").strip()).strip()
-                #print("Raw Site (full text):", raw_text)
-                links = td.find_all("a")
-                # if there are exactly 2 links, assume one location
-                if links and len(links) == 2 | 3:
-                    #return a flat list
-                    event_site = [format_site(raw_text)]
-                #if there are more than 2 links, assume multiple locations
-                elif links and len(links) > 3:
-                    event_site = format_site_multi(raw_text)
-                else:
-                    event_site = [format_site(raw_text)]
-                print("Formatted Site:", event_site)
-                insert_venue(event_site)
-                for site in event_site:
-                    venue_id.append(get_venue_id(site[0]))
-            
-            if "hosted by" in header_text.lower():
-                positions.append("Host")
-                td = row.find("td")
-                event_host = []
-                # First check for <li> tags
-                li_items = td.find_all("li")
-                if li_items:
-                    for li in li_items:
-                        host_text = li.get_text(strip=True)
-                        if 'emcee' in host_text.lower():
-                            continue
-                        event_host.append(format_person(host_text))
-                else:
+                if "site" in header_text.lower():
+                    td = row.find("td")
+                    # get the raw text while preserving newlines and remove bracketed content
+                    raw_text = re.sub(r'\[.*?\]', '', td.get_text(separator="\n").strip()).strip()
+                    #print("Raw Site (full text):", raw_text)
                     links = td.find_all("a")
-                    if links:
-                        for a in links:
-                            host_text = a.text.strip()
+                    # if there are exactly 2 links, assume one location
+                    if links and len(links) == 2 | 3:
+                        #return a flat list
+                        event_site = [format_site(raw_text)]
+                    #if there are more than 2 links, assume multiple locations
+                    elif links and len(links) > 3:
+                        event_site = format_site_multi(raw_text)
+                    else:
+                        event_site = [format_site(raw_text)]
+                    print("Formatted Site:", event_site)
+                    insert_venue(event_site)
+                    for site in event_site:
+                        venue_id.append(get_venue_id(site[0]))
+                
+                if "hosted by" in header_text.lower():
+                    positions.append("Host")
+                    td = row.find("td")
+                    event_host = []
+                    # First check for <li> tags
+                    li_items = td.find_all("li")
+                    if li_items:
+                        for li in li_items:
+                            host_text = li.get_text(strip=True)
                             if 'emcee' in host_text.lower():
                                 continue
                             event_host.append(format_person(host_text))
                     else:
-                        event_host = [format_person(td.text.strip())]
-                if event_host:
-                    print("Formatted Host:", event_host)
-                    person_details = scrape_person_list(event_host)
-                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Host) Birth Date:", birth_date)
-                        print("(Host) Birth Country:", birth_country)
-                        print("(Host) Death Date:", death_date)
-                        if i < len(event_host):
-                            insert_person([event_host[i]], [birth_date, birth_country, death_date])
-                            connections.append((n, event_host[i][0], event_host[i][-1], birth_date, "Host"))
+                        links = td.find_all("a")
+                        if links:
+                            for a in links:
+                                host_text = a.text.strip()
+                                if 'emcee' in host_text.lower():
+                                    continue
+                                event_host.append(format_person(host_text))
+                        else:
+                            event_host = [format_person(td.text.strip())]
+                    if event_host:
+                        print("Formatted Host:", event_host)
+                        person_details = scrape_person_list(event_host)
+                        for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                            print("(Host) Birth Date:", birth_date)
+                            print("(Host) Birth Country:", birth_country)
+                            print("(Host) Death Date:", death_date)
+                            if i < len(event_host):
+                                insert_person([event_host[i]], [birth_date, birth_country, death_date])
+                                connections.append((n, event_host[i][0], event_host[i][-1], birth_date, "Host"))
 
-            if "preshow hosts" in header_text.lower():
-                positions.append("Preshow Host")
-                td = row.find("td")
-                # get raw text (stop at the first bracket)
-                raw_text = re.split(r'\[', td.get_text(separator="\n").strip(), 1)[0].strip()
-                event_preshowhost = []
-                li_items = td.find_all("li")
-                if li_items:
-                    for li in li_items:
-                        preshowhost_text = li.get_text(strip=True)
-                        if 'emcee' in preshowhost_text.lower():
-                            continue
-                        formatted_host = format_person(preshowhost_text)
-                        if formatted_host:  # Ensure it's not empty
-                            event_preshowhost.append(formatted_host)
-                else:
-                    links = td.find_all("a")
-                    if links:
-                        for a in links:
-                            preshowhost_text = a.text.strip()
+                if "preshow hosts" in header_text.lower():
+                    positions.append("Preshow Host")
+                    td = row.find("td")
+                    # get raw text (stop at the first bracket)
+                    raw_text = re.split(r'\[', td.get_text(separator="\n").strip(), 1)[0].strip()
+                    event_preshowhost = []
+                    li_items = td.find_all("li")
+                    if li_items:
+                        for li in li_items:
+                            preshowhost_text = li.get_text(strip=True)
                             if 'emcee' in preshowhost_text.lower():
                                 continue
                             formatted_host = format_person(preshowhost_text)
-                            if formatted_host:
+                            if formatted_host:  # Ensure it's not empty
                                 event_preshowhost.append(formatted_host)
                     else:
-                        # Fallback: use the raw text.
-                        formatted_host = format_person(raw_text)
-                        if formatted_host:
-                            event_preshowhost.append(formatted_host)
-                if event_preshowhost:
-                    print("Formatted Preshow Host:", event_preshowhost)
-                    person_details = scrape_person_list(event_preshowhost)
-                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Preshow Host) Birth Date:", birth_date)
-                        print("(Preshow Host) Birth Country:", birth_country)
-                        print("(Preshow Host) Death Date:", death_date)
-                        if i < len(event_preshowhost):
-                            insert_person([event_preshowhost[i]], [birth_date, birth_country, death_date])
-                            connections.append((n, event_preshowhost[i][0], event_preshowhost[i][-1], birth_date, "Preshow Host"))
+                        links = td.find_all("a")
+                        if links:
+                            for a in links:
+                                preshowhost_text = a.text.strip()
+                                if 'emcee' in preshowhost_text.lower():
+                                    continue
+                                formatted_host = format_person(preshowhost_text)
+                                if formatted_host:
+                                    event_preshowhost.append(formatted_host)
+                        else:
+                            # Fallback: use the raw text.
+                            formatted_host = format_person(raw_text)
+                            if formatted_host:
+                                event_preshowhost.append(formatted_host)
+                    if event_preshowhost:
+                        print("Formatted Preshow Host:", event_preshowhost)
+                        person_details = scrape_person_list(event_preshowhost)
+                        for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                            print("(Preshow Host) Birth Date:", birth_date)
+                            print("(Preshow Host) Birth Country:", birth_country)
+                            print("(Preshow Host) Death Date:", death_date)
+                            if i < len(event_preshowhost):
+                                insert_person([event_preshowhost[i]], [birth_date, birth_country, death_date])
+                                connections.append((n, event_preshowhost[i][0], event_preshowhost[i][-1], birth_date, "Preshow Host"))
 
-            if "produced by" in header_text.lower():
-                positions.append("Producer")
-                td = row.find("td")
-                event_producer = []
-                li_items = td.find_all("li")
-                if li_items:
-                    for li in li_items:
-                        prod_text = li.get_text(strip=True)
-                        if 'emcee' in prod_text.lower():
-                            continue
-                        event_producer.append(format_person(prod_text))
-                else:
-                    links = td.find_all("a")
-                    if links:
-                        for a in links:
-                            prod_text = a.text.strip()
+                if "produced by" in header_text.lower():
+                    positions.append("Producer")
+                    td = row.find("td")
+                    event_producer = []
+                    li_items = td.find_all("li")
+                    if li_items:
+                        for li in li_items:
+                            prod_text = li.get_text(strip=True)
                             if 'emcee' in prod_text.lower():
                                 continue
                             event_producer.append(format_person(prod_text))
                     else:
-                        raw_text = td.text.strip()
-                        # separate lowercase from uppercase (e.g., KapoorKaty -> Kapoor\nKaty)
-                        separated_text = re.sub(r'(?<=[a-z])(?=[A-Z])', r'\n', raw_text)
-                        # split names by commas or newlines and format each name individually
-                        names = [name.strip() for name in re.split(r'[,\n]+', separated_text) if name.strip()]
-                        # apply format_person to each name individually
-                        event_producer = [format_person(name) for name in names]
-                if event_producer:
-                    print("Formatted Producer:", event_producer)
-                    person_details = scrape_person_list(event_producer)
-                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Producer) Birth Date:", birth_date)
-                        print("(Producer) Birth Country:", birth_country)
-                        print("(Producer) Death Date:", death_date)
-                        if i < len(event_producer):
-                            insert_person([event_producer[i]], [birth_date, birth_country, death_date])
-                            connections.append((n, event_producer[i][0], event_producer[i][-1], birth_date, "Producer"))
+                        links = td.find_all("a")
+                        if links:
+                            for a in links:
+                                prod_text = a.text.strip()
+                                if 'emcee' in prod_text.lower():
+                                    continue
+                                event_producer.append(format_person(prod_text))
+                        else:
+                            raw_text = td.text.strip()
+                            # separate lowercase from uppercase (e.g., KapoorKaty -> Kapoor\nKaty)
+                            separated_text = re.sub(r'(?<=[a-z])(?=[A-Z])', r'\n', raw_text)
+                            # split names by commas or newlines and format each name individually
+                            names = [name.strip() for name in re.split(r'[,\n]+', separated_text) if name.strip()]
+                            # apply format_person to each name individually
+                            event_producer = [format_person(name) for name in names]
+                    if event_producer:
+                        print("Formatted Producer:", event_producer)
+                        person_details = scrape_person_list(event_producer)
+                        for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                            print("(Producer) Birth Date:", birth_date)
+                            print("(Producer) Birth Country:", birth_country)
+                            print("(Producer) Death Date:", death_date)
+                            if i < len(event_producer):
+                                insert_person([event_producer[i]], [birth_date, birth_country, death_date])
+                                connections.append((n, event_producer[i][0], event_producer[i][-1], birth_date, "Producer"))
 
-            if "directed by" in header_text.lower():
-                positions.append("Director")
-                td = row.find("td")
-                event_director = []
-                li_items = td.find_all("li")
-                if li_items:
-                    for li in li_items:
-                        prod_text = li.get_text(strip=True)
-                        if 'emcee' in prod_text.lower():
-                            continue
-                        event_director.append(format_person(prod_text))
-                else:
-                    links = td.find_all("a")
-                    if links:
-                        for a in links:
-                            prod_text = a.text.strip()
+                if "directed by" in header_text.lower():
+                    positions.append("Director")
+                    td = row.find("td")
+                    event_director = []
+                    li_items = td.find_all("li")
+                    if li_items:
+                        for li in li_items:
+                            prod_text = li.get_text(strip=True)
                             if 'emcee' in prod_text.lower():
                                 continue
                             event_director.append(format_person(prod_text))
                     else:
-                        event_director = [format_person(td.text.strip())]
-                if event_director:
-                    print("Formatted Director:", event_director)
-                    person_details = scrape_person_list(event_director, "director")
-                    for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Director) Birth Date:", birth_date)
-                        print("(Director) Birth Country:", birth_country)
-                        print("(Director) Death Date:", death_date)
-                        if i < len(event_director):
-                            insert_person([event_director[i]], [birth_date, birth_country, death_date])
-                            connections.append((n, event_director[i][0], event_director[i][-1], birth_date, "Director"))
+                        links = td.find_all("a")
+                        if links:
+                            for a in links:
+                                prod_text = a.text.strip()
+                                if 'emcee' in prod_text.lower():
+                                    continue
+                                event_director.append(format_person(prod_text))
+                        else:
+                            event_director = [format_person(td.text.strip())]
+                    if event_director:
+                        print("Formatted Director:", event_director)
+                        person_details = scrape_person_list(event_director, "director")
+                        for i, (birth_date, birth_country, death_date) in enumerate(person_details):
+                            print("(Director) Birth Date:", birth_date)
+                            print("(Director) Birth Country:", birth_country)
+                            print("(Director) Death Date:", death_date)
+                            if i < len(event_director):
+                                insert_person([event_director[i]], [birth_date, birth_country, death_date])
+                                connections.append((n, event_director[i][0], event_director[i][-1], birth_date, "Director"))
 
-            if "network" in header_text.lower():
-                td = row.find("td")
-                # Extract all <a> tags for network names
-                links = td.find_all("a")
-                event_network = [link.text.strip() for link in links if link.text.strip()]
-                print("Network Names:", event_network)
+                if "network" in header_text.lower():
+                    td = row.find("td")
+                    # Extract all <a> tags for network names
+                    links = td.find_all("a")
+                    event_network = [link.text.strip() for link in links if link.text.strip()]
+                    print("Network Names:", event_network)
 
-            if "duration" in header_text.lower():
-                td = row.find("td")
-                raw_duration = td.text.strip()
-                event_duration = convert_duration_to_minutes(raw_duration)
-                print("Duration:", event_duration, "minutes") 
+                if "duration" in header_text.lower():
+                    td = row.find("td")
+                    raw_duration = td.text.strip()
+                    event_duration = convert_duration_to_minutes(raw_duration)
+                    print("Duration:", event_duration, "minutes") 
 
-            if "best picture" in header_text.lower():
-                td = row.find("td")
-                raw_best_picture = td.text.strip()
-                scrape_movie_details(raw_best_picture)
+                if "best picture" in header_text.lower():
+                    td = row.find("td")
+                    raw_best_picture = td.text.strip()
+                    scrape_movie_details(raw_best_picture)
 
-    insert_position(positions)
-    insert_award(n, event_date, venue_id, event_duration, event_network) 
-    insert_person_connection(connections)   
+        insert_position(positions)
+        insert_award(n, event_date, venue_id, event_duration, event_network) 
+        insert_person_connection(connections) 
+    else:
+        print(f"Award edition iteration already completed (award infobox), ",n)  
 
 # function to scrape more detailed data, such as movie infos and nominations
 def scrape_detailed_data(n):
@@ -1665,14 +1962,15 @@ def scrape_detailed_data(n):
 
 def scrape_data(n):
     scrape_award_info_data(n)
+    scrape_awards(n)
 
 
 def main():
     #movie_title = "Maestro"
     #movie_link = "/wiki/Maestro_(2023_film)"
     #scrape_movie_details(movie_link=movie_link)
-    scrape_awards(96)
-    '''iterations = range(97, 96, -1)  # 97th to 1st
+    scrape_awards(95)
+    '''iterations = range(97, 94, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
