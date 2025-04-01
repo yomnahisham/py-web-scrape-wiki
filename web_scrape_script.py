@@ -603,7 +603,28 @@ def award_edition_exists(n):
         return result
     return None
 
+def normalize_movie_name(movie_name):
+    """
+    Normalize movie_name to always be a string.
+    If movie_name is a list with one element, return that element.
+    If movie_name is a list with multiple elements, you can decide:
+      - to join them (e.g., ", ".join(movie_name))
+      - or simply pick the first element.
+    """
+    if isinstance(movie_name, list):
+        if len(movie_name) == 1:
+            return movie_name[0]
+        else:
+            # Depending on your needs, you might join them or simply choose the first element.
+            # Here we choose the first element.
+            return movie_name[0]
+    return movie_name
+
+
 def movie_exists(movie_name):
+    # Normalize the movie_name so it's always a string.
+    movie_name = normalize_movie_name(movie_name)
+
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,))
@@ -612,8 +633,6 @@ def movie_exists(movie_name):
     conn.close()
     # Return a tuple (or the full row) rather than an int
     if result:
-        # If result is already a tuple (e.g., (movie_id,)) just return it.
-        # But if it is an int, wrap it in a tuple.
         if isinstance(result, int):
             return (result,)
         return result
@@ -760,8 +779,11 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 movie_id_row = movie_exists(movie_name)
                 if not movie_id_row:
                     # If movie_name is iterable (e.g. a list of titles), iterate through it.
-                    for movie in movie_name:
-                        movie_link = link_by.get(movie)
+                    movie_name = normalize_movie_name(movie_name)
+                    editted_mn = re.sub(r'\s*\(.*?\)', '', movie_name)
+                    movie_link = link_by.get(editted_mn)
+                    '''for movie in movie_name:
+                        movie_link = link_by.get(movie)'''
                     scrape_movie_details(movie_title=movie_name, movie_link=movie_link)
                     movie_id_row = movie_exists(movie_name)
                     if not movie_id_row:
@@ -774,7 +796,7 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 movie_id = movie_id_row[0]
 
                 # Determine the win flag based on status (adjust logic as needed).
-                won_flag = 1 if status and "win" in status.lower() else 0
+                won_flag = 1 if status and "won" in status.lower() else 0
 
                 # Insert the nomination record.
                 nomination_id = insert_nomination_one(award_id, movie_id, category_id, won_flag, None)
@@ -839,6 +861,7 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     print(movie_link)
                     link = movie_link  # default to movie_link if available
                     if movie_link is None:
+                        movie_name = normalize_movie_name(movie_name)
                         editted_mn = re.sub(r'\s*\(.*?\)', '', movie_name)
                         movie_link = link_by.get(editted_mn)
                         link = movie_link
@@ -1045,6 +1068,10 @@ def format_site_multi(raw_text):
     return locations
 
 def format_movie_name(movie_title):
+    #print("this right")
+    # if movie_title is a list, take the first element.
+    if isinstance(movie_title, list):
+        movie_title = movie_title[0]
     return movie_title.replace(" ", "_")
 
 # function to convert the duration strictly into minutes
@@ -2005,7 +2032,7 @@ def main():
     #movie_link = "/wiki/Maestro_(2023_film)"
     #scrape_movie_details(movie_link=movie_link)
     #scrape_awards(95)
-    iterations = range(96, 95, -1)  # 97th to 1st
+    iterations = range(94, 93, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
