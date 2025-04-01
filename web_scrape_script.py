@@ -526,6 +526,25 @@ def insert_movie(movie_name, release_dates, in_language, run_time, country, prod
     cursor.close()
     conn.close()
 
+def insert_noinfobox_movie(movie_title):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_title,)
+        )
+    movie_id = cursor.fetchone()
+
+    if not movie_id:
+        cursor.execute(
+            "INSERT INTO movie (movie_name) VALUES (%s)", (movie_title,)
+        )
+    else: 
+        print(f"Movie {movie_title} already exists")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 def insert_category(cat):
     conn = connect_db()
     cursor = conn.cursor()
@@ -681,20 +700,26 @@ def insert_nomination_one(award_edition_id, movie_id, category_id, won, submitte
     return nomination_id
 
 def insert_nomination_person(nomination_id, person_id, position_id):
-    """
-    Insert a nomination-person record into the nomination_person table.
-    """
     conn = connect_db()
     cursor = conn.cursor()
-    query = """
-        INSERT INTO nomination_person (nomination_id, person_id, position_id)
-        VALUES (%s, %s, %s)
-    """
-    cursor.execute(query, (nomination_id, person_id, position_id))
-    print("query,", nomination_id, person_id, position_id)
-    conn.commit()
+
+    # Check if entry already exists
+    cursor.execute(
+        "SELECT 1 FROM nomination_person WHERE nomination_id = %s AND person_id = %s AND position_id = %s",
+        (nomination_id, person_id, position_id),
+    )
+    
+    if cursor.fetchone():
+        print(f"Entry ({nomination_id}, {person_id}, {position_id}) already exists. Skipping insertion.")
+    else:
+        query = "INSERT INTO nomination_person (nomination_id, person_id, position_id) VALUES (%s, %s, %s)"
+        cursor.execute(query, (nomination_id, person_id, position_id))
+        conn.commit()
+        print(f"Inserted ({nomination_id}, {person_id}, {position_id}) successfully.")
+
     cursor.close()
     conn.close()
+
 
 def insert_nominations(award_no, nominations_by_category, link_by):
     conn = connect_db()
@@ -782,9 +807,9 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                             # Insert the new person record if desired.
                             # For example: insert_person(fname, lname, bd, birth_country, death_date)
                             print(f"Inserting person '{formatted_person}' with birth date {bd}")
-                        print("(nomin) Birth Date:", bd)
+                        '''print("(nomin) Birth Date:", bd)
                         print("(nomin) Birth Country:", birth_country)
-                        print("(nomin) Death Date:", death_date)
+                        print("(nomin) Death Date:", death_date)'''
                         # If person exists, link them with the nomination.
                         if person_id:
                             # Set position_id based on role; here we default to 1.
@@ -806,16 +831,24 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     continue
 
                 # Check if movie exists before scraping.
+                print(movie_name)
                 movie_link = link_by.get(movie_name)
+                print(movie_link)
                 movie_id_row = movie_exists(movie_name)
                 if not movie_id_row:
+                    print(movie_link)
                     link = movie_link  # default to movie_link if available
                     if movie_link is None:
-                        # try finding a link from the person list if movie link is missing.
-                        for person in person_list:
-                            link = link_by.get(person)
-                            if link:
-                                break
+                        editted_mn = re.sub(r'\s*\(.*?\)', '', movie_name)
+                        movie_link = link_by.get(editted_mn)
+                        link = movie_link
+                        if movie_link is None:
+                            # try finding a link from the person list if movie link is missing.
+                            for person in person_list:
+                                print("it is here!")
+                                link = link_by.get(person)
+                                if link:
+                                    break
                     print("Link used:", link)
                     scrape_movie_details(movie_title=movie_name, movie_link=link)
                     movie_id_row = movie_exists(movie_name)
@@ -852,9 +885,9 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                             print(f"Person '{formatted_person}' (born {bd}) already exists, skipping insertion.")
                         else:
                             print(f"Inserting person '{formatted_person}' with birth date {bd}")
-                        print("(nomin) Birth Date:", bd)
+                        '''print("(nomin) Birth Date:", bd)
                         print("(nomin) Birth Country:", birth_country)
-                        print("(nomin) Death Date:", death_date)
+                        print("(nomin) Death Date:", death_date)'''
                         if person_id:
                             position_id = 1  # Default position id; change as needed.
                             insert_nomination_person(nomination_id, person_id, position_id)
@@ -1229,7 +1262,6 @@ def scrape_movie_details(movie_title=None, movie_link=None):
     print("Movie Name:", movie_name)
 
     movie_infobox = soup.find("table", {'class': 'infobox vevent'})
-    # Uncomment and adjust the fallback block if necessary.
     '''
     if not movie_infobox:
         print(f"Could not find movie infobox for {movie_title} at {url}")
@@ -1243,6 +1275,11 @@ def scrape_movie_details(movie_title=None, movie_link=None):
         print("Movie Name:", movie_name)
         movie_infobox = soup.find("table", {'class': 'infobox vevent'})
     '''
+
+    if not movie_infobox:
+        print(f"Movie {movie_title, movie_link} has no infobox. Skipping scrape.")
+        insert_noinfobox_movie(movie_title)
+        return
 
     movie_details = movie_infobox.find_all("tr")
 
@@ -1304,9 +1341,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Director:", movie_directors)
                     person_details = scrape_person_list(movie_directors, "director")
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Director) Birth Date:", birth_date)
+                        '''print("(Director) Birth Date:", birth_date)
                         print("(Director) Birth Country:", birth_country)
-                        print("(Director) Death Date:", death_date)
+                        print("(Director) Death Date:", death_date)'''
                         if i < len(movie_directors):
                             insert_person([movie_directors[i]], [birth_date, birth_country, death_date])
                             # Assuming first element is first name and last element is last name
@@ -1344,9 +1381,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Writer:", movie_writers)
                     person_details = scrape_person_list(movie_writers, "writer")
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Writer) Birth Date:", birth_date)
+                        '''print("(Writer) Birth Date:", birth_date)
                         print("(Writer) Birth Country:", birth_country)
-                        print("(Writer) Death Date:", death_date)
+                        print("(Writer) Death Date:", death_date)'''
                         if i < len(movie_writers):
                             insert_person([movie_writers[i]], [birth_date, birth_country, death_date])
                             connections.append((movie_name, movie_writers[i][0][0], movie_writers[i][0][-1], birth_date, "Writer"))
@@ -1383,9 +1420,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Producer:", movie_producers)
                     person_details = scrape_person_list(movie_producers, "producer")
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Producer) Birth Date:", birth_date)
+                        '''print("(Producer) Birth Date:", birth_date)
                         print("(Producer) Birth Country:", birth_country)
-                        print("(Producer) Death Date:", death_date)
+                        print("(Producer) Death Date:", death_date)'''
                         if i < len(movie_producers):
                             insert_person([movie_producers[i]], [birth_date, birth_country, death_date])
                             connections.append((movie_name, movie_producers[i][0][0], movie_producers[i][0][-1], birth_date, "Producer"))
@@ -1422,9 +1459,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Stars:", movie_stars)
                     person_details = scrape_person_list(movie_stars)
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Star) Birth Date:", birth_date)
+                        '''print("(Star) Birth Date:", birth_date)
                         print("(Star) Birth Country:", birth_country)
-                        print("(Star) Death Date:", death_date)
+                        print("(Star) Death Date:", death_date)'''
                         if i < len(movie_stars):
                             insert_person([movie_stars[i]], [birth_date, birth_country, death_date])
                             connections.append((movie_name, movie_stars[i][0][0], movie_stars[i][0][-1], birth_date, "Star"))
@@ -1463,9 +1500,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Cinematographer:", movie_cinematography)
                     person_details = scrape_person_list(movie_cinematography)
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Cinematographer) Birth Date:", birth_date)
+                        '''print("(Cinematographer) Birth Date:", birth_date)
                         print("(Cinematographer) Birth Country:", birth_country)
-                        print("(Cinematographer) Death Date:", death_date)
+                        print("(Cinematographer) Death Date:", death_date)'''
                         if i < len(movie_cinematography):
                             insert_person([movie_cinematography[i]], [birth_date, birth_country, death_date])
                             connections.append((movie_name, movie_cinematography[i][0][0], movie_cinematography[i][0][-1], birth_date, "Cinematographer"))
@@ -1498,9 +1535,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Editor:", movie_editor)
                     person_details = scrape_person_list(movie_editor, "editor")
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Editor) Birth Date:", birth_date)
+                        '''print("(Editor) Birth Date:", birth_date)
                         print("(Editor) Birth Country:", birth_country)
-                        print("(Editor) Death Date:", death_date)
+                        print("(Editor) Death Date:", death_date)'''
                         if i < len(movie_editor):
                             insert_person([movie_editor[i]], [birth_date, birth_country, death_date])
                             # handle the case where format_person returns a list.
@@ -1549,9 +1586,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     print("Formatted Composer:", movie_music)
                     person_details = scrape_person_list(movie_music, "composer")
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
-                        print("(Composer) Birth Date:", birth_date)
+                        '''print("(Composer) Birth Date:", birth_date)
                         print("(Composer) Birth Country:", birth_country)
-                        print("(Composer) Death Date:", death_date)
+                        print("(Composer) Death Date:", death_date)'''
                         if i < len(movie_music):
                             insert_person([movie_music[i]], [birth_date, birth_country, death_date])
                             connections.append((movie_name, movie_music[i][0][0], movie_music[i][0][-1], birth_date, "Composer"))
@@ -1653,8 +1690,6 @@ def scrape_awards(n):
     else:
         print("No strictly 'wikitable' found on the page.")
         return {}  # return empty dict if no table is found
-
-    print(awards_table)
 
     awards_details = awards_table.find_all("tr")
     # dictionary keyed by category text (e.g., "best actor", "best writing", etc.)
@@ -1969,14 +2004,14 @@ def main():
     #movie_title = "Maestro"
     #movie_link = "/wiki/Maestro_(2023_film)"
     #scrape_movie_details(movie_link=movie_link)
-    scrape_awards(95)
-    '''iterations = range(97, 94, -1)  # 97th to 1st
+    #scrape_awards(95)
+    iterations = range(96, 95, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                print(f"Error in processing a page: {e}")'''
+                print(f"Error in processing a page: {e}")
 
 main()
