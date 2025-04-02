@@ -1764,6 +1764,7 @@ def scrape_awards(n):
     page = requests.get(url)
     soup = BeautifulSoup(page.content, 'lxml')
 
+    # Find all table elements and filter for those with strictly class "wikitable"
     all_tables = soup.find_all("table")
     awards_tables = [
         table for table in all_tables 
@@ -1776,71 +1777,128 @@ def scrape_awards(n):
         awards_table = awards_tables[0]
     else:
         print("No strictly 'wikitable' found on the page.")
-        return {}
+        return {}  # Return empty dict if no table is found
 
-    awards_details = awards_table.find_all("tr")
-    nominations_by_category = {}
-    link_by_person = {}
+    nominations_by_category = {}  # Dictionary keyed by category (e.g., "best actor")
+    link_by_person = {}           # Dictionary keyed by person name with the corresponding link
 
-    for row in awards_details:
-        tds = row.find_all("td")
-        for td in tds:
-            div = td.find("div")
-            if div and div.find("b"):
-                category = clean_category(div.text.strip())
+    if n in (1, 2, 85):
+        # Try to find <div> elements within the awards table.
+        divs = awards_table.find_all("div")
+        if not divs:
+            print("No <div> elements found in the awards table; searching entire page.")
+            divs = soup.find_all("div")
+        # Iterate over found <div> elements.
+        for div in divs:
+            b_tag = div.find("b")
+            # Only consider divs that have a nonempty <b> and a following <ul>
+            ul = div.find_next_sibling("ul")
+            if b_tag and b_tag.text.strip() and ul:
+                header_text = b_tag.text.strip()
+                print("Found header div with text:", header_text)
+                category = clean_category(header_text)
                 if category not in nominations_by_category:
                     nominations_by_category[category] = []
-                
-                ul = td.find("ul")
-                if ul:
-                    nominees = ul.find_all("li")
-                    for nominee in nominees:
-                        a_tags = nominee.find_all("a")
+                nominees = ul.find_all("li")
+                for nominee in nominees:
+                    # Extract nominee name and link.
+                    a_tags = nominee.find_all("a")
+                    if a_tags:
                         for a_tag in a_tags:
-                            link = a_tag["href"] if a_tag.has_attr("href") else None
+                            link = a_tag.get("href")
                             person_name = a_tag.text.strip()
                             link_by_person[person_name] = link
-                        
-                        won_tag = nominee.find("b") or nominee.find("i")
-                        producer_list = []
-                        movie_title = ""
-                        if won_tag:
-                            movie_i = won_tag.find("i")
-                            if movie_i:
-                                # extract movie title only from the first <a> before normal text
-                                movie_links = movie_i.find_all("a")
-                                if movie_links:
-                                    movie_title = movie_links[0].get_text(strip=True)  # take the first hyperlinked text
-                                else:
-                                    movie_title = movie_i.get_text(strip=True)  # fallback to the full text if no hyperlink
-                            full_text = won_tag.get_text(" ", strip=True)
-                            full_text = re.sub(r'[–‡]', '', full_text).strip()
-                            if movie_title:
-                                producer_text = full_text.replace(movie_title, "").strip()
-                                producer_list = clean_producers(producer_text, movie_title)
+                    else:
+                        person_name = nominee.get_text(strip=True)
+                        link_by_person[person_name] = None
+                    # Process winning entries.
+                    won_tag = nominee.find("b") or nominee.find("i")
+                    if won_tag:
+                        movie_title = won_tag.text.strip()
+                        if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
+                            parts = movie_title.split("–")
+                            if len(parts) > 1:
+                                movie_title = parts[0].strip()
+                                producer_text = parts[1].strip()
+                                producer_list = clean_producers(producer_text)
                             else:
-                                movie_title = full_text
-                        
-                        # extract producers from sibling <a> tags if necessary
-                        if not producer_list:
-                            sibling_producers = []
-                            for sibling in nominee.find_all_next():
-                                if sibling.name == 'a':
-                                    sibling_producers.append(sibling.text.strip())
-                                elif sibling.name == 'li':
-                                    break  # Stop when reaching a new nominee
-                            if sibling_producers:
-                                producer_list = clean_producers(", ".join(sibling_producers), movie_title)
+                                print(f"Unexpected format for movie title: {movie_title}")
+                                producer_list = []
+                            nominations_by_category[category].append([movie_title, producer_list, "won", link])
+                    # Process additional nomination details if available.
+                    normal_tag = nominee.find("ul")
+                    if normal_tag:
+                        details = normal_tag.text.strip()
+                        lines = details.splitlines()
+                        for line in lines:
+                            parts = re.split(r'\s*–\s*', line, maxsplit=1)
+                            if len(parts) == 2:
+                                title = parts[0].strip()
+                                producer_text = parts[1].strip()
+                                producer_list = clean_producers(producer_text)
+                                nominations_by_category[category].append([title, producer_list, link])
+                            else:
+                                print(f"Unexpected format for line: {line}")
+    else:
+        # For later Academy Awards, assume the category and nominee details are within <td> elements.
+        awards_details = awards_table.find_all("tr")
+        for row in awards_details:
+            tds = row.find_all("td")
+            for td in tds:
+                div = td.find("div")
+                if div and div.find("b"):
+                    category = clean_category(div.text.strip())
+                    if category not in nominations_by_category:
+                        nominations_by_category[category] = []
+                    ul = td.find("ul")
+                    if ul:
+                        nominees = ul.find_all("li")
+                        for nominee in nominees:
+                            a_tags = nominee.find_all("a")
+                            if a_tags:
+                                for a_tag in a_tags:
+                                    link = a_tag.get("href")
+                                    person_name = a_tag.text.strip()
+                                    link_by_person[person_name] = link
+                            else:
+                                person_name = nominee.get_text(strip=True)
+                                link_by_person[person_name] = None
+                            won_tag = nominee.find("b") or nominee.find("i")
+                            if won_tag:
+                                movie_title = won_tag.text.strip()
+                                if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
+                                    parts = movie_title.split("–")
+                                    if len(parts) > 1:
+                                        movie_title = parts[0].strip()
+                                        producer_text = parts[1].strip()
+                                        producer_list = clean_producers(producer_text)
+                                    else:
+                                        print(f"Unexpected format for movie title: {movie_title}")
+                                        producer_list = []
+                                    nominations_by_category[category].append([movie_title, producer_list, "won", link])
+                            normal_tag = nominee.find("ul")
+                            if normal_tag:
+                                details = normal_tag.text.strip()
+                                lines = details.splitlines()
+                                for line in lines:
+                                    parts = re.split(r'\s*–\s*', line, maxsplit=1)
+                                    if len(parts) == 2:
+                                        title = parts[0].strip()
+                                        producer_text = parts[1].strip()
+                                        producer_list = clean_producers(producer_text)
+                                        nominations_by_category[category].append([title, producer_list, link])
+                                    else:
+                                        print(f"Unexpected format for line: {line}")
 
-                        if movie_title:
-                            nominations_by_category[category].append([movie_title, producer_list, link])
+    # Debug output.
+    print("nominations_by_category:", nominations_by_category)
     for cat, nominations in nominations_by_category.items():
         print(f"Category: {cat}")
         for nomination in nominations:
             print(nomination)
-    
     for person, link in link_by_person.items():
         print(f"Person: {person}, Link: {link}")
+
     insert_nominations(n, nominations_by_category, link_by_person)
     return nominations_by_category
 
