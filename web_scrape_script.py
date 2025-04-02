@@ -33,26 +33,7 @@ def insert_venue(venue_list):
         # Remove empty or whitespace-only items.
         venue = [v.strip() for v in venue if v.strip()]
         
-        # Check if we have at least 3 fields and one of the first two is "coconut grove".
-        if len(venue) >= 3 and ("coconut grove" in [venue[0].lower(), venue[1].lower()] or "cocoanut grove" in [venue[0].lower(), venue[1].lower()]):
-            # Force: neighborhood = "Coconut Grove", venue_name = the other of the first two.
-            if venue[0].lower() == "coconut grove":
-                neighborhood = venue[0]
-                venue_name = venue[1]
-            else:
-                neighborhood = venue[1]
-                venue_name = venue[0]
-            city = venue[2]
-            if len(venue) >= 5:
-                state = venue[3]
-                country = venue[4]
-            elif len(venue) == 4:
-                state = venue[3]
-                country = "U.S."
-            else:
-                state = "California"
-                country = "U.S."
-        elif len(venue) == 1:
+        if len(venue) == 1:
             # Format: [venue_name]
             venue_name = venue[0]
             neighborhood = None
@@ -67,6 +48,7 @@ def insert_venue(venue_list):
             country = "U.S."
         elif len(venue) == 3:
             if venue[1].lower() == "hollywood":
+                # Format: [venue_name, neighborhood, state]
                 venue_name, neighborhood, state = venue
                 city = "Los Angeles"
                 country = "U.S."
@@ -77,6 +59,7 @@ def insert_venue(venue_list):
                 country = "U.S."
         elif len(venue) == 4:
             if venue[1].lower() == "hollywood":
+                # Format: [venue_name, neighborhood, state, country]
                 venue_name, neighborhood, state, country = venue
                 city = "Los Angeles"
             else:
@@ -99,7 +82,7 @@ def insert_venue(venue_list):
         variant1 = norm_venue_name
         variant2 = "the " + norm_venue_name
 
-        # only compare venue names for duplicates
+        # Only compare venue names for duplicates.
         select_query = """
             SELECT venue_id
             FROM venue
@@ -799,11 +782,13 @@ def insert_nominations(award_no, nominations_by_category, link_by):
     for cat, nominations in nominations_by_category.items():
         print("here")
         print(f"Category: {cat}")
-        # insert_category should now return a category_id.
+        # Insert category and retrieve category_id.
         category_id = insert_category(cat)
-        # Categories where the nomination data structure is different
+        
+        # For categories with a different nomination structure.
         if "actor" in cat.lower() or "actress" in cat.lower() or "directing" in cat.lower():
-            for nomination in nominations:
+            for i, nomination in enumerate(nominations):
+                won_flag = 1 if i == 0 else 0  # First nominee wins, others don't
                 if len(nomination) == 4:
                     person_name, movie_name, status, _ = nomination  # discard provided link
                 elif len(nomination) == 3:
@@ -816,12 +801,9 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 # Check if movie details already exist before scraping.
                 movie_id_row = movie_exists(movie_name)
                 if not movie_id_row:
-                    # If movie_name is iterable (e.g. a list of titles), iterate through it.
                     movie_name = normalize_movie_name(movie_name)
                     editted_mn = re.sub(r'\s*\(.*?\)', '', movie_name)
                     movie_link = link_by.get(editted_mn)
-                    '''for movie in movie_name:
-                        movie_link = link_by.get(movie)'''
                     scrape_movie_details(movie_title=movie_name, movie_link=movie_link)
                     movie_id_row = movie_exists(movie_name)
                     if not movie_id_row:
@@ -836,10 +818,9 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 # Extract movie_id from the row.
                 movie_id = movie_id_row[0]
 
-                # Determine the win flag based on status (adjust logic as needed).
-                won_flag = 1 if status and "won" in status.lower() else 0
+                print("Status,", status)
 
-                # Insert the nomination record.
+                # Insert the nomination record using the correct won_flag.
                 nomination_id = insert_nomination_one(award_id, movie_id, category_id, won_flag, None)
                 print(f"Inserted nomination record (ID: {nomination_id}) for movie '{movie_name}' in category '{cat}'.")
 
@@ -847,8 +828,10 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 person_link = link_by.get(person_name)
                 formatted_person = format_person(person_name)
                 # Split name into parts.
-                fname_part, lname_part = (formatted_person.split(" ", 1)
-                                          if " " in formatted_person else (formatted_person, ""))
+                fname_part, lname_part = (
+                    formatted_person.split(" ", 1)
+                    if " " in formatted_person else (formatted_person, "")
+                )
                 persons_to_scrape.append([formatted_person, person_link])
                 print(nomination)
 
@@ -857,8 +840,10 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     # Scrape and obtain details (including birth_date).
                     person_details = scrape_person_list([p[0] for p in persons_to_scrape], "director")
                     for (formatted_person, p_link), (birth_date, birth_country, death_date) in zip(persons_to_scrape, person_details):
-                        name_parts = (formatted_person.split(" ", 1)
-                                                  if " " in formatted_person else (formatted_person, ""))
+                        name_parts = (
+                            formatted_person.split(" ", 1)
+                            if " " in formatted_person else (formatted_person, "")
+                        )
                         # Ensure that birth_date is a scalar value.
                         bd = birth_date[0] if isinstance(birth_date, (tuple, list)) else birth_date
 
@@ -870,9 +855,6 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                             # Insert the new person record if desired.
                             # For example: insert_person(fname, lname, bd, birth_country, death_date)
                             print(f"Inserting person '{formatted_person}' with birth date {bd}")
-                        '''print("(nomin) Birth Date:", bd)
-                        print("(nomin) Birth Country:", birth_country)
-                        print("(nomin) Death Date:", death_date)'''
                         # If person exists, link them with the nomination.
                         if person_id:
                             insert_nomination_person(nomination_id, person_id)
@@ -881,7 +863,8 @@ def insert_nominations(award_no, nominations_by_category, link_by):
 
         else:
             # For categories where nominations come with a list of persons.
-            for nomination in nominations:
+            for i, nomination in enumerate(nominations):
+                won_flag = 1 if i == 0 else 0  # First nominee wins, others don't
                 if len(nomination) == 4:
                     movie_name, person_list, status, _ = nomination  # discard provided link
                 elif len(nomination) == 3:
@@ -924,7 +907,6 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     print(f"Movie '{movie_name}' already exists, skipping scrape.")
 
                 movie_id = movie_id_row[0]
-                won_flag = 1 if status and "won" in status.lower() else 0
                 nomination_id = insert_nomination_one(award_id, movie_id, category_id, won_flag, None)
                 print(f"Inserted nomination record (ID: {nomination_id}) for movie '{movie_name}' in category '{cat}'.")
 
@@ -932,29 +914,27 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                 for person in person_list:
                     person_link = link_by.get(person)
                     formatted_person = format_person(person)
-                    name_parts = (formatted_person.split(" ", 1)
-                                  if " " in formatted_person else (formatted_person, ""))
+                    name_parts = (
+                        formatted_person.split(" ", 1)
+                        if " " in formatted_person else (formatted_person, "")
+                    )
                     persons_to_scrape.append([formatted_person, person_link])
 
                 if persons_to_scrape:
                     person_details = scrape_person_list([p[0] for p in persons_to_scrape], "director")
                     for (formatted_person, p_link), (birth_date, birth_country, death_date) in zip(persons_to_scrape, person_details):
-                        name_parts = (formatted_person.split(" ", 1)
-                                      if " " in formatted_person else (formatted_person, ""))
+                        name_parts = (
+                            formatted_person.split(" ", 1)
+                            if " " in formatted_person else (formatted_person, "")
+                        )
                         bd = birth_date[0] if isinstance(birth_date, (tuple, list)) else birth_date
-                        #print("NOWWW,",name_parts)
                         full_name, _ = name_parts
-                        #print("NOWWWs,",full_name)
                         person_id = person_exists(full_name, bd)
                         if person_id:
                             print(f"Person '{formatted_person}' (born {bd}) already exists, skipping insertion.")
                         else:
                             print(f"Inserting person '{formatted_person}' with birth date {bd}")
-                        '''print("(nomin) Birth Date:", bd)
-                        print("(nomin) Birth Country:", birth_country)
-                        print("(nomin) Death Date:", death_date)'''
                         if person_id:
-                            #position_id = 1  # Default position id; change as needed.
                             insert_nomination_person(nomination_id, person_id)
                             print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}).")
                     persons_to_scrape.clear()
@@ -1179,38 +1159,47 @@ def can_follow_link(entity_type, article):
 
     return url
 
-def clean_producers(producer_text):
-    # remove trailing "producer(s)" if present
-    lower = producer_text.lower()
-    for word in ["producers", "producer"]:
-        if lower.endswith(word):
-            producer_text = producer_text[:-len(word)].strip()
-            break
-    # Remove specified phrases (case-insensitive) BEFORE further splitting
-    producer_text = re.sub(r'(?i)music and lyrics by', '', producer_text)
-    producer_text = re.sub(r'(?i)production design:', '', producer_text)
-    producer_text = re.sub(r'(?i)directed by', '', producer_text)
-    producer_text = re.sub(r'(?i)screenplay by', '', producer_text)
-    # Replace "; Story by" with a comma
-    producer_text = producer_text.replace("; Story by", ", ")
-    # Replace "; Set Decoration:" with a comma
-    producer_text = producer_text.replace("; Set Decoration:", ", ")
-    # Remove everything starting with "; based" (case-insensitive)
-    producer_text = re.sub(r'(?i); based.*$', '', producer_text)
-    # Now replace " and " with commas for consistent splitting
+def clean_producers(producer_text, movie_title=""):
+    """
+    Cleans producer names by removing extra spaces, unwanted phrases, 
+    and ensuring the movie title is not included.
+    """
+    # Remove trailing "producer(s)" if present
+    producer_text = re.sub(r'\s*(producers?|directors?)$', '', producer_text, flags=re.IGNORECASE).strip()
+
+    # Remove unwanted phrases
+    remove_phrases = [
+        "music and lyrics by", "production design:", "directed by", 
+        "screenplay by", "story by", "set decoration:"
+    ]
+    for phrase in remove_phrases:
+        producer_text = re.sub(rf'(?i){phrase}', '', producer_text)
+
+    # Remove text in parentheses or square brackets (e.g., citations like [32])
+    producer_text = re.sub(r'\[.*?\]|\(.*?\)', '', producer_text)
+
+    # Standardize delimiters
     producer_text = producer_text.replace(" and ", ", ")
-    # Remove anything in parentheses or square brackets (including the brackets)
-    producer_text = re.sub(r'[\(\[].*?[\)\]]', '', producer_text)
-    # split on commas with optional spaces and clean each element
-    producers = []
-    for p in re.split(r',\s*', producer_text):
-        # remove any extra role info following " as "
-        cleaned = p.split(" as ")[0].replace("‡", "").strip()
-        if cleaned.lower() in {"producer", "producers"}:
-            continue
-        if cleaned:
-            producers.append(cleaned)
+    
+    # Remove movie title if present
+    if movie_title:
+        producer_text = producer_text.replace(movie_title, "").strip()
+
+    # Remove unwanted symbols
+    producer_text = producer_text.replace("–", "").replace("‡", "").replace("*", "").strip()
+
+    # Extract names
+    if "," in producer_text:
+        producers = [p.strip() for p in producer_text.split(",") if p.strip()]
+    else:
+        # Extract names in "First Last" or similar format
+        producers = re.findall(r'([A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]+)+)', producer_text)
+
+    # Remove unwanted strings (e.g., "edit" or citation markers)
+    producers = [p for p in producers if p.lower() != "edit" and not re.match(r'^\d+$', p)]
+
     return producers
+
 
 def clean_text(text):
     """Removes bracketed content like [1], [citation needed] from a string."""
@@ -1775,27 +1764,22 @@ def scrape_awards(n):
     page = requests.get(url)
     soup = BeautifulSoup(page.content, 'lxml')
 
-    # Find all table elements and filter for those with strictly class "wikitable"
     all_tables = soup.find_all("table")
     awards_tables = [
         table for table in all_tables 
         if table.get("class") is not None and set(table.get("class")) == {"wikitable"}
     ]
     
-    # If there are more than one, take the second one; otherwise, take the first if it exists.
     if len(awards_tables) >= 2:
         awards_table = awards_tables[1]
     elif awards_tables:
         awards_table = awards_tables[0]
     else:
         print("No strictly 'wikitable' found on the page.")
-        return {}  # return empty dict if no table is found
+        return {}
 
     awards_details = awards_table.find_all("tr")
-    # dictionary keyed by category text (e.g., "best actor", "best writing", etc.)
     nominations_by_category = {}
-    
-    # dictionary keyed by person name with the corresponding link
     link_by_person = {}
 
     for row in awards_details:
@@ -1803,7 +1787,6 @@ def scrape_awards(n):
         for td in tds:
             div = td.find("div")
             if div and div.find("b"):
-                # Clean the category to remove any bracketed citations
                 category = clean_category(div.text.strip())
                 if category not in nominations_by_category:
                     nominations_by_category[category] = []
@@ -1813,47 +1796,44 @@ def scrape_awards(n):
                     nominees = ul.find_all("li")
                     for nominee in nominees:
                         a_tags = nominee.find_all("a")
-                        if a_tags:
-                            for a_tag in a_tags:
-                                # extract the link if available
-                                link = a_tag["href"] if a_tag.has_attr("href") else None
-                                # extract the person's name and store the link by person
-                                person_name = a_tag.text.strip()
-                                link_by_person[person_name] = link
-                        else:
-                            # no <a> tag present, so use the nominee text as the person's name
-                            person_name = nominee.get_text(strip=True)
-                            link_by_person[person_name] = None
-                        # process the nomination details for winning entries
+                        for a_tag in a_tags:
+                            link = a_tag["href"] if a_tag.has_attr("href") else None
+                            person_name = a_tag.text.strip()
+                            link_by_person[person_name] = link
+                        
                         won_tag = nominee.find("b") or nominee.find("i")
+                        producer_list = []
+                        movie_title = ""
                         if won_tag:
-                            movie_title = won_tag.text.strip()
-                            # check if the movie title contains a dash and markers (‡ or *)
-                            if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
-                                parts = movie_title.split("–")
-                                if len(parts) > 1:
-                                    movie_title = parts[0].strip()
-                                    producer_text = parts[1].strip()
-                                    producer_list = clean_producers(producer_text)
+                            movie_i = won_tag.find("i")
+                            if movie_i:
+                                # extract movie title only from the first <a> before normal text
+                                movie_links = movie_i.find_all("a")
+                                if movie_links:
+                                    movie_title = movie_links[0].get_text(strip=True)  # take the first hyperlinked text
                                 else:
-                                    print(f"Unexpected format for movie title: {movie_title}")
-                                    producer_list = []
-                                nominations_by_category[category].append([movie_title, producer_list, "won", link])
-                        # process additional nomination details if available
-                        normal_tag = nominee.find("ul")
-                        if normal_tag:
-                            details = normal_tag.text.strip()
-                            lines = details.splitlines()
-                            for line in lines:
-                                parts = re.split(r'\s*–\s*', line, maxsplit=1)
-                                if len(parts) == 2:
-                                    title = parts[0].strip()
-                                    producer_text = parts[1].strip()
-                                    producer_list = clean_producers(producer_text)
-                                    nominations_by_category[category].append([title, producer_list, link])
-                                else:
-                                    print(f"Unexpected format for line: {line}")
+                                    movie_title = movie_i.get_text(strip=True)  # fallback to the full text if no hyperlink
+                            full_text = won_tag.get_text(" ", strip=True)
+                            full_text = re.sub(r'[–‡]', '', full_text).strip()
+                            if movie_title:
+                                producer_text = full_text.replace(movie_title, "").strip()
+                                producer_list = clean_producers(producer_text, movie_title)
+                            else:
+                                movie_title = full_text
+                        
+                        # extract producers from sibling <a> tags if necessary
+                        if not producer_list:
+                            sibling_producers = []
+                            for sibling in nominee.find_all_next():
+                                if sibling.name == 'a':
+                                    sibling_producers.append(sibling.text.strip())
+                                elif sibling.name == 'li':
+                                    break  # Stop when reaching a new nominee
+                            if sibling_producers:
+                                producer_list = clean_producers(", ".join(sibling_producers), movie_title)
 
+                        if movie_title:
+                            nominations_by_category[category].append([movie_title, producer_list, link])
     for cat, nominations in nominations_by_category.items():
         print(f"Category: {cat}")
         for nomination in nominations:
@@ -1861,10 +1841,7 @@ def scrape_awards(n):
     
     for person, link in link_by_person.items():
         print(f"Person: {person}, Link: {link}")
-
-    #print(nominations_by_category)
     insert_nominations(n, nominations_by_category, link_by_person)
-
     return nominations_by_category
 
 
@@ -2105,8 +2082,9 @@ def main():
     #movie_title = "Maestro"
     #movie_link = "/wiki/Maestro_(2023_film)"
     #scrape_movie_details(movie_link=movie_link)
-    #scrape_awards(97)
-    iterations = range(90, 0, -1)  # 97th to 1st
+    #scrape_awards(92)
+    
+    iterations = range(85, 84, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
