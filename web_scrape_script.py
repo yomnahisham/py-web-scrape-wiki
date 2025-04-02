@@ -1730,8 +1730,12 @@ def scrape_movie_details(movie_title=None, movie_link=None):
             # --- Languages ---
             if "language" in header_text or "languages" in header_text:
                 language_text = td.text.strip()
-                language_text = re.sub(r'\[.*?\]', '', language_text) 
-                in_language = re.findall(r'[A-Z][a-z]*', language_text) 
+                language_text = re.sub(r'\[.*?\]', '', language_text)
+                # If there is no whitespace, split by capitals; otherwise, use spaces.
+                if " " not in language_text:
+                    in_language = split_by_capitals(language_text)
+                else:
+                    in_language = language_text.split()
                 print("Language:", in_language)
             
             # --- Countries ---
@@ -1757,7 +1761,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
     insert_movie_person(connections)
 
 def split_by_capitals(text):
-    return re.findall(r'[A-Z][^A-Z]*', text)
+    # Splits the text whenever a capital letter starts a new word
+    return re.findall(r'[A-Z][a-z]*(?=[A-Z]|$)', text)
 
 def scrape_awards(n):
     url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
@@ -1899,7 +1904,6 @@ def scrape_awards(n):
         print(f"Person: {person}, Link: {link}")
     insert_nominations(n, nominations_by_category, link_by_person)
     return nominations_by_category
-
 
 
 # actual function to scrape award info data (mainly follows the infobox and gets more data whenever required)
@@ -2140,7 +2144,7 @@ def main():
     #scrape_movie_details(movie_link=movie_link)
     #scrape_awards(92)
     
-    iterations = range(97, 0, -1)  # 97th to 1st
+    iterations = range(97, 96, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
