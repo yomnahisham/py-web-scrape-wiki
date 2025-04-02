@@ -642,54 +642,57 @@ def person_exists(fullname, birthdate, ignore=None):
     
     print("Fullname and birthdate:", fullname, birthdate)
     
-    # Normalize fullname:
-    # If the first element is a list, use it; otherwise, assume fullname is already flat.
-    if isinstance(fullname[0], list):
+    # Ensure fullname is a non-empty list
+    if not fullname or not isinstance(fullname, (list, tuple)):
+        print("Error: Fullname is empty or not a list:", fullname)
+        return None
+    
+    # If the first element is a list, extract it; otherwise, assume fullname is already flat.
+    if isinstance(fullname[0], list) and fullname[0]:
         name_parts = fullname[0]
     else:
         name_parts = fullname
 
-    # Remove any parts that are empty or whitespace.
-    name_parts = [part.strip() for part in name_parts if part.strip()]
+    # Ensure there are actual name parts
+    name_parts = [part.strip() for part in name_parts if part and part.strip()]
     
-    # Depending on the number of parts, assign first, (optional middle) and last.
-    if len(name_parts) == 2:
+    if not name_parts:  # Avoid further errors if name_parts is still empty
+        print("Error: No valid name parts found.")
+        return None
+    
+    # Assign first, (optional middle), and last name based on available parts
+    if len(name_parts) == 1:
+        fname, mname, lname = name_parts[0], None, ""
+    elif len(name_parts) == 2:
         fname, lname = name_parts
         mname = None
-    elif len(name_parts) >= 3:
-        fname, mname, lname = name_parts[0], name_parts[1], name_parts[-1]
     else:
-        # If there's only one part, assign it to fname and leave others empty.
-        fname = name_parts[0]
-        lname = ""
-        mname = None
+        fname, mname, lname = name_parts[0], name_parts[1], name_parts[-1]
 
     print("Parsed name -> First:", fname, "Middle:", mname, "Last:", lname)
     
-    # Ensure birthdate is a scalar (if it's a tuple/list, take the first element)
-    if birthdate is not None and isinstance(birthdate, (tuple, list)):
-        birthdate = birthdate[0]
+    # Ensure birthdate is a single value
+    if birthdate and isinstance(birthdate, (tuple, list)):
+        birthdate = birthdate[0] if birthdate else None
     
     print("Using birthdate:", birthdate)
     
-    # Use the birthdate in the query if provided and nonempty.
+    # Build SQL query based on available data
     if birthdate and birthdate.strip():
         cursor.execute(
             "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate = %s",
             (fname, lname, birthdate)
         )
+    elif mname:
+        cursor.execute(
+            "SELECT person_id FROM person WHERE first_name = %s AND middle_name = %s AND last_name = %s AND birthDate IS NULL",
+            (fname, mname, lname)
+        )
     else:
-        # If no birthdate is provided, include middle_name if available.
-        if mname:
-            cursor.execute(
-                "SELECT person_id FROM person WHERE first_name = %s AND middle_name = %s AND last_name = %s AND birthDate IS NULL",
-                (fname, mname, lname)
-            )
-        else:
-            cursor.execute(
-                "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate IS NULL",
-                (fname, lname)
-            )
+        cursor.execute(
+            "SELECT person_id FROM person WHERE first_name = %s AND last_name = %s AND birthDate IS NULL",
+            (fname, lname)
+        )
     
     person_id = cursor.fetchone()  # Fetch result
     cursor.close()
@@ -804,6 +807,8 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     movie_name = normalize_movie_name(movie_name)
                     editted_mn = re.sub(r'\s*\(.*?\)', '', movie_name)
                     movie_link = link_by.get(editted_mn)
+                    print("moviename",movie_name)
+                    print("movielink",movie_link)
                     scrape_movie_details(movie_title=movie_name, movie_link=movie_link)
                     movie_id_row = movie_exists(movie_name)
                     if not movie_id_row:
@@ -846,6 +851,7 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                         )
                         # Ensure that birth_date is a scalar value.
                         bd = birth_date[0] if isinstance(birth_date, (tuple, list)) else birth_date
+                        print("and this", bd)
 
                         # Now check if this person already exists using the scraped birth_date.
                         person_id = person_exists(name_parts, bd)
@@ -1732,6 +1738,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                 language_text = td.text.strip()
                 language_text = re.sub(r'\[.*?\]', '', language_text) 
                 in_language = re.findall(r'[A-Z][a-z]*', language_text) 
+                if " " not in language_text:
+                    in_language = split_by_capitals(language_text) 
                 print("Language:", in_language)
             
             # --- Countries ---
@@ -1757,7 +1765,7 @@ def scrape_movie_details(movie_title=None, movie_link=None):
     insert_movie_person(connections)
 
 def split_by_capitals(text):
-    return re.findall(r'[A-Z][^A-Z]*', text)
+    return re.findall(r'[A-Z][a-z]*(?=[A-Z]|$)', text)
 
 def scrape_awards(n):
     url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
@@ -1834,6 +1842,62 @@ def scrape_awards(n):
 
                         if movie_title:
                             nominations_by_category[category].append([movie_title, producer_list, link])
+    if not nominations_by_category:
+        print("Switching Method.")
+        
+        divs = awards_table.find_all("div")
+        if not divs:
+            print("No <div> elements found in the awards table; searching entire page.")
+            divs = soup.find_all("div")
+
+        for div in divs:
+            b_tag = div.find("b")
+            ul = div.find_next_sibling("ul")
+
+            if b_tag and b_tag.text.strip() and ul:
+                header_text = b_tag.text.strip()
+                print("Found header div with text:", header_text)
+                category = clean_category(header_text)
+
+                if category not in nominations_by_category:
+                    nominations_by_category[category] = []
+                
+                nominees = ul.find_all("li")
+                for nominee in nominees:
+                    a_tags = nominee.find_all("a")
+                    for a_tag in a_tags:
+                        link = a_tag.get("href")
+                        person_name = a_tag.text.strip()
+                        link_by_person[person_name] = link
+                    
+                    won_tag = nominee.find("b") or nominee.find("i")
+                    if won_tag:
+                        movie_title = won_tag.text.strip()
+
+                        if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
+                            parts = movie_title.split("–")
+                            if len(parts) > 1:  # Fix: Check if splitting was successful
+                                movie_title = parts[0].strip()
+                                producer_text = parts[1].strip() if len(parts) > 1 and parts[1] else ""
+                                producer_list = clean_producers(producer_text) if producer_text else []
+                            else:
+                                print(f"Unexpected format for movie title: {movie_title}")
+                                producer_list = []
+
+                    normal_tag = nominee.find("ul")
+                    if normal_tag:
+                        details = normal_tag.text.strip()
+                        lines = details.splitlines()
+                        for line in lines:
+                            parts = re.split(r'\s*–\s*', line, maxsplit=1)
+                            if len(parts) > 1:  # Fix: Ensure splitting is successful
+                                title = parts[0].strip()
+                                producer_text = parts[1].strip()
+                                producer_list = clean_producers(producer_text)
+                                nominations_by_category[category].append([title, producer_list, link])
+                            else:
+                                print(f"Skipping unexpected format for line: {line}")
+
     for cat, nominations in nominations_by_category.items():
         print(f"Category: {cat}")
         for nomination in nominations:
@@ -2084,8 +2148,8 @@ def main():
     #scrape_movie_details(movie_link=movie_link)
     #scrape_awards(92)
     
-    iterations = range(97, 96, -1)  # 97th to 1st
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    iterations = range(97, 0, -1)  # 97th to 1st
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
             try:
