@@ -7,6 +7,7 @@ from datetime import datetime
 import re
 import csv
 import concurrent.futures
+from urllib.parse import unquote
 
 # load env variables for db connection
 load_dotenv()
@@ -120,7 +121,7 @@ def insert_venue(venue_list):
     conn.close()
 
 # function to insert person into db
-def insert_person(person_list, person_info):
+def insert_person(person_list, person_info=None):
     conn = connect_db()
     cursor = conn.cursor()
     
@@ -139,8 +140,12 @@ def insert_person(person_list, person_info):
         
         if not parts:
             continue  # Skip empty entries
-
+        
         first_name = parts[0]
+        # If first name starts with "#cite", ignore this entry.
+        if first_name.startswith("#cite"):
+            continue
+
         middle_name = None
         last_name = ""
 
@@ -169,6 +174,7 @@ def insert_person(person_list, person_info):
             """
             cursor.execute(select_query, (first_name, last_name))
 
+        # Ensure birth_country is not numeric.
         if isinstance(birth_country, (int, float)) or str(birth_country).isdigit():
             birth_country = None
 
@@ -370,7 +376,7 @@ def insert_person_connection(connection_list):
 def insert_movie_person(connection_list):
     conn = connect_db()
     cursor = conn.cursor()
-
+    print("error here?")
     for connection in connection_list:
         movie_name, first_name, last_name, date_of_birth, position = connection
         # fetch person_id based on first name, last name, and date of birth
@@ -425,14 +431,13 @@ def insert_movie_person(connection_list):
     cursor.close()
     conn.close()
 
-#function to insert the movie details gathered from scrape_movie_details
 def insert_movie(movie_name, release_dates, in_language, run_time, country, production_companies):
     conn = connect_db()
     cursor = conn.cursor()
     
-    cursor.execute(
-        "SELECT * FROM movie WHERE movie_name = %s", (movie_name,)
-    )
+    print("WE ARE HEREE")
+    # Check if the movie already exists.
+    cursor.execute("SELECT * FROM movie WHERE movie_name = %s", (movie_name,))
     if cursor.fetchone() is None:
         cursor.execute(
             "INSERT INTO movie (movie_name, run_time) VALUES (%s, %s)", (movie_name, run_time)
@@ -440,15 +445,25 @@ def insert_movie(movie_name, release_dates, in_language, run_time, country, prod
     else: 
         print(f"Movie {movie_name} already exists.") 
 
+    # Retrieve the movie_id (assumed primary key) for later use.
+    cursor.execute("SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,))
+    movie_row = cursor.fetchone()
+    if movie_row:
+        movie_id = movie_row[0]
+    else:
+        print(f"Failed to retrieve movie_id for {movie_name}.")
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return
 
+    # Insert release dates if they exist.
     for release_date in release_dates:
+        if not release_date:
+            continue
         cursor.execute(
-            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
-        )
-        movie_id = cursor.fetchone()
-
-        cursor.execute(
-            "SELECT * FROM movie_release_date WHERE movie_id = %s AND release_date = %s", (movie_id, release_date)
+            "SELECT * FROM movie_release_date WHERE movie_id = %s AND release_date = %s", 
+            (movie_id, release_date)
         )
         if cursor.fetchone() is None:
             cursor.execute(
@@ -456,75 +471,68 @@ def insert_movie(movie_name, release_dates, in_language, run_time, country, prod
                 (movie_id, release_date)
             )
         else: 
-            print(f"Movie {movie_name} and date {release_date} already exists.") 
-            continue
+            print(f"Movie {movie_name} and date {release_date} already exists.")
     
+    # Insert languages.
     for lang in in_language:
+        if not lang:
+            continue
         cursor.execute(
-            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
-        )
-        movie_id = cursor.fetchone()
-
-        cursor.execute(
-            "SELECT * FROM movie_language WHERE movie_id = %s AND in_language = %s", (movie_id, lang)
+            "SELECT * FROM movie_language WHERE movie_id = %s AND in_language = %s", 
+            (movie_id, lang)
         )
         if cursor.fetchone() is None:
             cursor.execute(
                 "INSERT INTO movie_language (movie_id, in_language) VALUES (%s, %s)",
-                (movie_id,lang)
+                (movie_id, lang)
             )
         else: 
-            print(f"Movie {movie_name} and lang {lang} already exists.") 
-            continue
+            print(f"Movie {movie_name} and lang {lang} already exists.")
     
+    # Insert countries.
     for con in country:
+        if not con:
+            continue
         cursor.execute(
-            "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
-        )
-        movie_id = cursor.fetchone()
-
-        cursor.execute(
-            "SELECT * FROM movie_country WHERE movie_id = %s AND country = %s", (movie_id, con)
+            "SELECT * FROM movie_country WHERE movie_id = %s AND country = %s", 
+            (movie_id, con)
         )
         if cursor.fetchone() is None:
             cursor.execute(
                 "INSERT INTO movie_country (movie_id, country) VALUES (%s, %s)",
-                (movie_id,con)
+                (movie_id, con)
             )
         else: 
-            print(f"Movie {movie_name} and country {con} already exists.") 
-            continue
+            print(f"Movie {movie_name} and country {con} already exists.")
     
+    # Insert production companies.
     for company in production_companies:
+        if not company:
+            continue
         cursor.execute(
-            "SELECT pd_id FROM production_company WHERE company_name = %s", (company)
+            "SELECT pd_id FROM production_company WHERE company_name = %s", (company,)
         )
-        company_id = cursor.fetchone()
-
-        if company_id:
-            for release_date in release_dates:
+        company_row = cursor.fetchone()
+        if company_row:
+            company_id = company_row[0]
+            cursor.execute(
+                "SELECT * FROM movie_produced_by WHERE movie_id = %s AND pd_id = %s", 
+                (movie_id, company_id)
+            )
+            if cursor.fetchone() is None:
                 cursor.execute(
-                    "SELECT movie_id FROM movie WHERE movie_name = %s", (movie_name,)
+                    "INSERT INTO movie_produced_by (movie_id, pd_id) VALUES (%s, %s)", 
+                    (movie_id, company_id)
                 )
-                movie_id = cursor.fetchone()
-                if movie_id and company_id:
-                    cursor.execute(
-                        "SELECT * FROM movie_produced_by WHERE movie_id = %s AND pd_id = %s", (movie_id[0], company_id[0])
-                    )
-                    if cursor.fetchone() is None:
-                        cursor.execute(
-                            "INSERT INTO movie_produced_by (movie_id, pd_id) VALUES (%s, %s)", (movie_id[0], company_id[0])
-                        )
-                    else:
-                        print(f"Entry for movie_id={movie_id[0]} and pd_id={company_id[0]} already exists.")
-                else:
-                    print(f"Failed to insert into movie_produced_by: movie_id={movie_id}, company_id={company_id}")
+            else:
+                print(f"Entry for movie_id={movie_id} and pd_id={company_id} already exists.")
         else: 
             print(f"No company with name {company} exists")
 
     conn.commit()
     cursor.close()
     conn.close()
+
 
 def insert_noinfobox_movie(movie_title):
     conn = connect_db()
@@ -571,16 +579,22 @@ def insert_production_company(production_companies):
     conn = connect_db()
     cursor = conn.cursor()
 
-    for company in production_companies:
-        cursor.execute(
-            "SELECT * FROM production_company WHERE company_name = %s", (company)
-        )
-        if cursor.fetchone() is None:
+    if production_companies:
+        for company in production_companies:
+            print("Executing query for company:", company)
+            print("SELECT * FROM production_company WHERE company_name = %s", (company,))
+
             cursor.execute(
-                "INSERT INTO production_company (company_name) VALUES (%s)", (company)
+                "SELECT * FROM production_company WHERE company_name = %s", (company,)
             )
-        else:
-            print(f"Company {company} already exists.")
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    "INSERT INTO production_company (company_name) VALUES (%s)", (company,)
+                )
+            else:
+                print(f"Company {company} already exists.")
+    else: 
+        print ("No Prod Company to add. Skipping.")
 
     conn.commit()
     cursor.close()
@@ -700,6 +714,30 @@ def person_exists(fullname, birthdate, ignore=None):
     
     return person_id[0] if person_id else None
 
+#not used--- not needed
+def get_position_id(cat):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cat_lower = cat.lower()
+
+    position_id = None
+    if "actor" in cat_lower or "actress" in cat_lower:
+        cursor.execute("SELECT position_id FROM positions WHERE title = %s"), ("Star")
+        position_id = cursor.fetchone()
+    elif "directing" in cat_lower or "international film" in cat_lower:
+        cursor.execute("SELECT position_id FROM positions WHERE title = %s"), ("Director")
+        position_id = cursor.fetchone()
+    elif "writing" in cat_lower:
+        cursor.execute("SELECT position_id FROM positions WHERE title = %s"), ("Writer")
+        position_id = cursor.fetchone()
+    elif "picture" in cat_lower:
+        cursor.execute("SELECT position_id FROM positions WHERE title = %s"), ("Producer")
+        position_id = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+    return position_id
+
 def insert_nomination_one(award_edition_id, movie_id, category_id, won, submitted_by=None):
     """
     Insert a nomination record into the nomination table.
@@ -718,23 +756,23 @@ def insert_nomination_one(award_edition_id, movie_id, category_id, won, submitte
     conn.close()
     return nomination_id
 
-def insert_nomination_person(nomination_id, person_id, position_id):
+def insert_nomination_person(nomination_id, person_id):
     conn = connect_db()
     cursor = conn.cursor()
 
     # Check if entry already exists
     cursor.execute(
-        "SELECT 1 FROM nomination_person WHERE nomination_id = %s AND person_id = %s AND position_id = %s",
-        (nomination_id, person_id, position_id),
+        "SELECT 1 FROM nomination_person WHERE nomination_id = %s AND person_id = %s",
+        (nomination_id, person_id),
     )
     
     if cursor.fetchone():
-        print(f"Entry ({nomination_id}, {person_id}, {position_id}) already exists. Skipping insertion.")
+        print(f"Entry ({nomination_id}, {person_id}) already exists. Skipping insertion.")
     else:
-        query = "INSERT INTO nomination_person (nomination_id, person_id, position_id) VALUES (%s, %s, %s)"
-        cursor.execute(query, (nomination_id, person_id, position_id))
+        query = "INSERT INTO nomination_person (nomination_id, person_id) VALUES (%s, %s)"
+        cursor.execute(query, (nomination_id, person_id))
         conn.commit()
-        print(f"Inserted ({nomination_id}, {person_id}, {position_id}) successfully.")
+        print(f"Inserted ({nomination_id}, {person_id}) successfully.")
 
     cursor.close()
     conn.close()
@@ -787,8 +825,11 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     scrape_movie_details(movie_title=movie_name, movie_link=movie_link)
                     movie_id_row = movie_exists(movie_name)
                     if not movie_id_row:
-                        print(f"Failed to get movie id for '{movie_name}'. Skipping nomination.")
-                        continue
+                        movie_name_redefined = unquote(movie_link.replace("/wiki/", "").replace("_", " "))
+                        movie_id_row = movie_exists(movie_name_redefined)
+                        if not movie_id_row:
+                            print(f"Failed to get movie id for '{movie_name}'. Skipping nomination.")
+                            continue
                 else:
                     print(f"Movie '{movie_name}' already exists, skipping scrape.")
 
@@ -834,10 +875,8 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                         print("(nomin) Death Date:", death_date)'''
                         # If person exists, link them with the nomination.
                         if person_id:
-                            # Set position_id based on role; here we default to 1.
-                            position_id = 1
-                            insert_nomination_person(nomination_id, person_id, position_id)
-                            print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}) as position {position_id}.")
+                            insert_nomination_person(nomination_id, person_id)
+                            print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}).")
                     persons_to_scrape.clear()
 
         else:
@@ -876,13 +915,16 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                     scrape_movie_details(movie_title=movie_name, movie_link=link)
                     movie_id_row = movie_exists(movie_name)
                     if not movie_id_row:
-                        print(f"Failed to get movie id for '{movie_name}'. Skipping nomination.")
-                        continue
+                        movie_name_redefined = unquote(movie_link.replace("/wiki/", "").replace("_", " "))
+                        movie_id_row = movie_exists(movie_name_redefined)
+                        if not movie_id_row:
+                            print(f"Failed to get movie id for '{movie_name}'. Skipping nomination.")
+                            continue
                 else:
                     print(f"Movie '{movie_name}' already exists, skipping scrape.")
 
                 movie_id = movie_id_row[0]
-                won_flag = 1 if status and "win" in status.lower() else 0
+                won_flag = 1 if status and "won" in status.lower() else 0
                 nomination_id = insert_nomination_one(award_id, movie_id, category_id, won_flag, None)
                 print(f"Inserted nomination record (ID: {nomination_id}) for movie '{movie_name}' in category '{cat}'.")
 
@@ -912,9 +954,9 @@ def insert_nominations(award_no, nominations_by_category, link_by):
                         print("(nomin) Birth Country:", birth_country)
                         print("(nomin) Death Date:", death_date)'''
                         if person_id:
-                            position_id = 1  # Default position id; change as needed.
-                            insert_nomination_person(nomination_id, person_id, position_id)
-                            print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}) as position {position_id}.")
+                            #position_id = 1  # Default position id; change as needed.
+                            insert_nomination_person(nomination_id, person_id)
+                            print(f"Linked person (ID: {person_id}) with nomination (ID: {nomination_id}).")
                     persons_to_scrape.clear()
                 print(nomination)
 
@@ -951,7 +993,7 @@ def format_movie_date(date_str):
     # Remove ISO date in parentheses (e.g., (2023-5-21))
     cleaned = re.sub(r'\(\d{4}-\d{1,2}-\d{1,2}\)', '', cleaned).strip()
 
-    # Remove any other parenthesized content (e.g., (Cannes))
+    # Remove any other parenthesized content (e.g., (Tribeca))
     cleaned = re.sub(r'\(.*?\)', '', cleaned).strip()
 
     # Remove any trailing commas or extra spaces
@@ -962,12 +1004,12 @@ def format_movie_date(date_str):
         print(f"Error formatting date '{date_str}': Date format not recognized: {cleaned}")
         return None
 
-    # Try two common formats:
-    possible_formats = ["%B %d, %Y", "%d %B %Y"]
+    # Try three common formats: complete and incomplete dates.
+    possible_formats = ["%B %d, %Y", "%d %B %Y", "%B %Y"]
     for fmt in possible_formats:
         try:
             dt = datetime.strptime(cleaned, fmt)
-            return dt.strftime("%Y-%m-%d")  # Convert to YYYY-MM-DD
+            return dt.strftime("%Y-%m-%d")  # Always return in YYYY-MM-DD format.
         except ValueError:
             continue
 
@@ -995,9 +1037,9 @@ def format_person(host_str):
     if isinstance(host_str, list):
         formatted_hosts = []
         for host in host_str:
-            # Remove citations and extra characters.
+            # remove citations and extra characters
             host_clean = re.sub(r'\[.*?\]', '', host).strip()
-            # If the host string starts with '#', ignore it.
+            # if the host string starts with '#', ignore it
             if host_clean.startswith("#"):
                 continue
             words = host_clean.split()  # split into a list of words
@@ -1180,6 +1222,9 @@ def clean_category(category_text):
 
 
 def scrape_person_list(person_list, entity_type=None):
+    # Remove any empty list entries
+    person_list = [p for p in person_list if not (isinstance(p, list) and not p)]
+    
     results = []
     for person in person_list:
         provided_url = None
@@ -1236,9 +1281,12 @@ def scrape_person_list(person_list, entity_type=None):
                         birth_date_span = row.find("span", {'class': 'bday'})
                         if birth_date_span:
                             person_birth_date = birth_date_span.text.strip()
-                            # if only a year is provided, append "-01-01" to form a complete date.
+                            # if only a year is provided, append "-01-01" to form a complete date
                             if len(person_birth_date) == 4:
                                 person_birth_date = person_birth_date + "-01-01"
+                            # if year and month are provided (e.g., "1967-12"), append "-01" to form a complete date
+                            elif len(person_birth_date) == 7:
+                                person_birth_date = person_birth_date + "-01"
                             print("Birth Date:", person_birth_date)
                         birthplace_div = row.find("div", {'class': 'birthplace'})
                         if birthplace_div:
@@ -1249,6 +1297,15 @@ def scrape_person_list(person_list, entity_type=None):
                                 person_birth_country = parts[-1]
                             else:
                                 person_birth_country = None
+                            # Remove any trailing closing parenthesis
+                            if person_birth_country:
+                                person_birth_country = person_birth_country.rstrip(')')
+                            # Remove "citation needed" (case-insensitive)
+                            if person_birth_country:
+                                person_birth_country = re.sub(r'\bcitation needed\b', '', person_birth_country, flags=re.I).strip()
+                            # If person_birth_country contains digits or the person's name, set it to None
+                            if person_birth_country and (re.search(r'\d', person_birth_country) or name.lower() in person_birth_country.lower()):
+                                person_birth_country = None
                         else:
                             born_text = born_cell.get_text(" ", strip=True)
                             if person_birth_date:
@@ -1258,7 +1315,14 @@ def scrape_person_list(person_list, entity_type=None):
                             parts = [p.strip() for p in born_text.split(",") if p.strip()]
                             if parts:
                                 person_birth_country = parts[-1]
+                                # Remove any trailing closing parenthesis
+                                person_birth_country = person_birth_country.rstrip(')')
                                 print("Birth Country (fallback):", person_birth_country)
+                                # Remove "citation needed" (case-insensitive)
+                                person_birth_country = re.sub(r'\bcitation needed\b', '', person_birth_country, flags=re.I).strip()
+                                # If person_birth_country contains digits or the person's name, set it to None
+                                if person_birth_country and (re.search(r'\d', person_birth_country) or name.lower() in person_birth_country.lower()):
+                                    person_birth_country = None
                     if "Died" in header_text:
                         death_date_span = row.find("span", class_="dday")
                         if death_date_span:
@@ -1444,6 +1508,9 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                     else:
                         movie_producers.append([format_person(td.text.strip()), None])
                 if movie_producers:
+                    print("Am i here")
+                    # filter out any producer entries where the formatted name is an empty list.
+                    movie_producers = [producer for producer in movie_producers if producer[0]]
                     print("Formatted Producer:", movie_producers)
                     person_details = scrape_person_list(movie_producers, "producer")
                     for i, (birth_date, birth_country, death_date) in enumerate(person_details):
@@ -1674,8 +1741,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
             # --- Languages ---
             if "language" in header_text or "languages" in header_text:
                 language_text = td.text.strip()
-                language_text = re.sub(r'\[.*?\]', '', language_text)
-                in_language = [lang.strip() for lang in language_text.splitlines() if lang.strip()]
+                language_text = re.sub(r'\[.*?\]', '', language_text) 
+                in_language = re.findall(r'[A-Z][a-z]*', language_text) 
                 print("Language:", in_language)
             
             # --- Countries ---
@@ -1685,7 +1752,11 @@ def scrape_movie_details(movie_title=None, movie_link=None):
                 else:
                     country_text = td.text.strip()
                     country_text = clean_text(country_text)
-                    country = [c.strip() for c in country_text.splitlines() if c.strip()]
+                    # If there is no whitespace and splitting by capitals yields multiple parts, use that:
+                    if " " not in country_text and len(split_by_capitals(country_text)) > 1:
+                        country = split_by_capitals(country_text)
+                    else:
+                        country = [c.strip() for c in country_text.splitlines() if c.strip()]
                 print("Country:", country)
 
     print(release_dates)
@@ -1696,6 +1767,8 @@ def scrape_movie_details(movie_title=None, movie_link=None):
     insert_movie(movie_name, release_dates, in_language, running_time, country, production_companies)
     insert_movie_person(connections)
 
+def split_by_capitals(text):
+    return re.findall(r'[A-Z][^A-Z]*', text)
 
 def scrape_awards(n):
     url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
@@ -1742,16 +1815,16 @@ def scrape_awards(n):
                         a_tags = nominee.find_all("a")
                         if a_tags:
                             for a_tag in a_tags:
-                                # Extract the link if available
+                                # extract the link if available
                                 link = a_tag["href"] if a_tag.has_attr("href") else None
-                                # Extract the person's name and store the link by person
+                                # extract the person's name and store the link by person
                                 person_name = a_tag.text.strip()
                                 link_by_person[person_name] = link
                         else:
-                            # No <a> tag present, so use the nominee text as the person's name
+                            # no <a> tag present, so use the nominee text as the person's name
                             person_name = nominee.get_text(strip=True)
                             link_by_person[person_name] = None
-                        # Process the nomination details for winning entries
+                        # process the nomination details for winning entries
                         won_tag = nominee.find("b") or nominee.find("i")
                         if won_tag:
                             movie_title = won_tag.text.strip()
@@ -1766,7 +1839,7 @@ def scrape_awards(n):
                                     print(f"Unexpected format for movie title: {movie_title}")
                                     producer_list = []
                                 nominations_by_category[category].append([movie_title, producer_list, "won", link])
-                        # Process additional nomination details if available
+                        # process additional nomination details if available
                         normal_tag = nominee.find("ul")
                         if normal_tag:
                             details = normal_tag.text.strip()
@@ -2004,10 +2077,11 @@ def scrape_award_info_data(n):
                     event_duration = convert_duration_to_minutes(raw_duration)
                     print("Duration:", event_duration, "minutes") 
 
-                if "best picture" in header_text.lower():
+                #best picture to be dealt with in scrape_award(n)
+                '''if "best picture" in header_text.lower():
                     td = row.find("td")
                     raw_best_picture = td.text.strip()
-                    scrape_movie_details(raw_best_picture)
+                    scrape_movie_details(raw_best_picture)'''
 
         insert_position(positions)
         insert_award(n, event_date, venue_id, event_duration, event_network) 
@@ -2031,8 +2105,8 @@ def main():
     #movie_title = "Maestro"
     #movie_link = "/wiki/Maestro_(2023_film)"
     #scrape_movie_details(movie_link=movie_link)
-    #scrape_awards(95)
-    iterations = range(94, 93, -1)  # 97th to 1st
+    #scrape_awards(97)
+    iterations = range(90, 0, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
