@@ -2084,7 +2084,7 @@ def main():
     #scrape_movie_details(movie_link=movie_link)
     #scrape_awards(92)
     
-    iterations = range(85, 84, -1)  # 97th to 1st
+    iterations = range(97, 96, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
