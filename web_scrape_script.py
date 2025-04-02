@@ -1731,7 +1731,7 @@ def scrape_movie_details(movie_title=None, movie_link=None):
             if "language" in header_text or "languages" in header_text:
                 language_text = td.text.strip()
                 language_text = re.sub(r'\[.*?\]', '', language_text) 
-                in_language = re.findall(r'[A-Z][a-z]*', language_text) 
+                in_language = re.findall(r'[A-Z][a-z]*(?:\s[A-Z][a-z]*)*', language_text)
                 print("Language:", in_language)
             
             # --- Countries ---
@@ -1757,7 +1757,7 @@ def scrape_movie_details(movie_title=None, movie_link=None):
     insert_movie_person(connections)
 
 def split_by_capitals(text):
-    return re.findall(r'[A-Z][^A-Z]*', text)
+    return re.findall(r'[A-Z][a-z]*|United Kingdom|United States', text)
 
 def scrape_awards(n):
     url = f"https://en.wikipedia.org/wiki/{ordinal(n)}_Academy_Awards"
@@ -1782,7 +1782,57 @@ def scrape_awards(n):
     nominations_by_category = {}  # Dictionary keyed by category (e.g., "best actor")
     link_by_person = {}           # Dictionary keyed by person name with the corresponding link
 
-    if n in (1, 2, 85):
+    # For later Academy Awards, assume the category and nominee details are within <td> elements.
+    awards_details = awards_table.find_all("tr")
+    for row in awards_details:
+        tds = row.find_all("td")
+        for td in tds:
+            div = td.find("div")
+            if div and div.find("b"):
+                category = clean_category(div.text.strip())
+                if category not in nominations_by_category:
+                    nominations_by_category[category] = []
+                ul = td.find("ul")
+                if ul:
+                    nominees = ul.find_all("li")
+                    for nominee in nominees:
+                        a_tags = nominee.find_all("a")
+                        if a_tags:
+                            for a_tag in a_tags:
+                                link = a_tag.get("href")
+                                person_name = a_tag.text.strip()
+                                link_by_person[person_name] = link
+                        else:
+                            person_name = nominee.get_text(strip=True)
+                            link_by_person[person_name] = None
+                        won_tag = nominee.find("b") or nominee.find("i")
+                        if won_tag:
+                            movie_title = won_tag.text.strip()
+                            if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
+                                parts = movie_title.split("–")
+                                if len(parts) > 1:
+                                    movie_title = parts[0].strip()
+                                    producer_text = parts[1].strip()
+                                    producer_list = clean_producers(producer_text)
+                                else:
+                                    print(f"Unexpected format for movie title: {movie_title}")
+                                    producer_list = []
+                                nominations_by_category[category].append([movie_title, producer_list, "won", link])
+                        normal_tag = nominee.find("ul")
+                        if normal_tag:
+                            details = normal_tag.text.strip()
+                            lines = details.splitlines()
+                            for line in lines:
+                                parts = re.split(r'\s*–\s*', line, maxsplit=1)
+                                if len(parts) == 2:
+                                    title = parts[0].strip()
+                                    producer_text = parts[1].strip()
+                                    producer_list = clean_producers(producer_text)
+                                    nominations_by_category[category].append([title, producer_list, link])
+                                else:
+                                    print(f"Unexpected format for line: {line}")
+    if not nominations_by_category:
+        print("Switching Method.")
         # Try to find <div> elements within the awards table.
         divs = awards_table.find_all("div")
         if not divs:
@@ -1839,57 +1889,7 @@ def scrape_awards(n):
                                 nominations_by_category[category].append([title, producer_list, link])
                             else:
                                 print(f"Unexpected format for line: {line}")
-    else:
-        # For later Academy Awards, assume the category and nominee details are within <td> elements.
-        awards_details = awards_table.find_all("tr")
-        for row in awards_details:
-            tds = row.find_all("td")
-            for td in tds:
-                div = td.find("div")
-                if div and div.find("b"):
-                    category = clean_category(div.text.strip())
-                    if category not in nominations_by_category:
-                        nominations_by_category[category] = []
-                    ul = td.find("ul")
-                    if ul:
-                        nominees = ul.find_all("li")
-                        for nominee in nominees:
-                            a_tags = nominee.find_all("a")
-                            if a_tags:
-                                for a_tag in a_tags:
-                                    link = a_tag.get("href")
-                                    person_name = a_tag.text.strip()
-                                    link_by_person[person_name] = link
-                            else:
-                                person_name = nominee.get_text(strip=True)
-                                link_by_person[person_name] = None
-                            won_tag = nominee.find("b") or nominee.find("i")
-                            if won_tag:
-                                movie_title = won_tag.text.strip()
-                                if "–" in movie_title and ("‡" in movie_title or "*" in movie_title):
-                                    parts = movie_title.split("–")
-                                    if len(parts) > 1:
-                                        movie_title = parts[0].strip()
-                                        producer_text = parts[1].strip()
-                                        producer_list = clean_producers(producer_text)
-                                    else:
-                                        print(f"Unexpected format for movie title: {movie_title}")
-                                        producer_list = []
-                                    nominations_by_category[category].append([movie_title, producer_list, "won", link])
-                            normal_tag = nominee.find("ul")
-                            if normal_tag:
-                                details = normal_tag.text.strip()
-                                lines = details.splitlines()
-                                for line in lines:
-                                    parts = re.split(r'\s*–\s*', line, maxsplit=1)
-                                    if len(parts) == 2:
-                                        title = parts[0].strip()
-                                        producer_text = parts[1].strip()
-                                        producer_list = clean_producers(producer_text)
-                                        nominations_by_category[category].append([title, producer_list, link])
-                                    else:
-                                        print(f"Unexpected format for line: {line}")
-
+        
     # Debug output.
     print("nominations_by_category:", nominations_by_category)
     for cat, nominations in nominations_by_category.items():
@@ -2142,7 +2142,7 @@ def main():
     #scrape_movie_details(movie_link=movie_link)
     #scrape_awards(92)
     
-    iterations = range(85, 84, -1)  # 97th to 1st
+    iterations = range(92, 91, -1)  # 97th to 1st
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(scrape_data, i) for i in iterations]
         for future in concurrent.futures.as_completed(futures):
